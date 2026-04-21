@@ -253,8 +253,8 @@ async function startServer() {
       }`).catch(() => null);
       
       // Search
-      await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 60000 });
-      await page.waitForTimeout(2000);
+      await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.waitForTimeout(5000);
 
       // Check if on search page or product page
       let isProductPage = await page.evaluate(`() => !!document.querySelector('[data-test="title"], h1.page-title')`);
@@ -266,7 +266,8 @@ async function startServer() {
           if (link) {
             const href = await link.getAttribute('href');
             if (href) {
-              await page.goto(href.startsWith('http') ? href : `https://www.bol.com${href}`, { waitUntil: 'networkidle' });
+              await page.goto(href.startsWith('http') ? href : `https://www.bol.com${href}`, { waitUntil: 'domcontentloaded' });
+              await page.waitForTimeout(5000);
             }
           }
         }

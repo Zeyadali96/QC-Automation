@@ -889,10 +889,12 @@ export default function App() {
 }
 
 function HighlightDiff({ master, live }: { master: string, live: string }) {
-  if (!live) return <span className="italic text-slate-300">Not Found</span>;
+  const mStr = String(master || '');
+  const lStr = String(live || '');
+  if (!lStr) return <span className="italic text-slate-300">Not Found</span>;
   
-  const masterWords = (master || '').toLowerCase().split(/\s+/).map(w => w.replace(/[™©®•●▪◦‣■□▢▣▤▥▦▧▨▩▪▫▬▭▮▯▰▱▲△▴▵▶▷▸▹▼▽▾▿◀◁◂◃]/g, '').trim()).filter(Boolean);
-  const liveWords = live.split(/\s+/);
+  const masterWords = mStr.toLowerCase().split(/\s+/).map(w => w.replace(/[™©®•●▪◦‣■□▢▣▤▥▦▧▨▩▪▫▬▭▮▯▰▱▲△▴▵▶▷▸▹▼▽▾▿◀◁◂◃]/g, '').trim()).filter(Boolean);
+  const liveWords = lStr.split(/\s+/);
   
   return (
     <>
@@ -911,20 +913,23 @@ function HighlightDiff({ master, live }: { master: string, live: string }) {
 
 function ComparisonItem({ label, master, live, similarity, status, isLongText = false, mini = false }: any) {
   const [expanded, setExpanded] = useState(false);
-  const isImage = live && live.startsWith('IMAGE:');
-  const isAPlusImages = live && live.startsWith('APLUS_IMAGES:');
-  const isAPlusData = live && live.startsWith('APLUS_DATA:');
+  const mStr = String(master || '');
+  const lStr = String(live || '');
+  
+  const isImage = lStr && lStr.startsWith('IMAGE:');
+  const isAPlusImages = lStr && lStr.startsWith('APLUS_IMAGES:');
+  const isAPlusData = lStr && lStr.startsWith('APLUS_DATA:');
   
   let imageUrls: string[] = [];
   let aPlusText = '';
 
   if (isImage) {
-    imageUrls = [live.replace('IMAGE:', '')];
+    imageUrls = [lStr.replace('IMAGE:', '')];
   } else if (isAPlusImages) {
-    imageUrls = live.replace('APLUS_IMAGES:', '').split(',');
+    imageUrls = lStr.replace('APLUS_IMAGES:', '').split(',');
   } else if (isAPlusData) {
     try {
-      const data = JSON.parse(live.replace('APLUS_DATA:', ''));
+      const data = JSON.parse(lStr.replace('APLUS_DATA:', ''));
       imageUrls = data.images || [];
       aPlusText = data.text || '';
     } catch (e) {}
