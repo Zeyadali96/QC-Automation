@@ -253,44 +253,81 @@ async function startServer() {
       }`).catch(() => null);
       
       // Search
-      await page.goto(searchUrl, { waitUntil: 'load', timeout: 60000 });
+      await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 60000 });
       await page.waitForTimeout(2000);
 
       // Check if on search page or product page
-      const isSearchPage = await page.evaluate(`() => !!document.querySelector('.product-list, [data-test="product-list"]')`);
-      if (isSearchPage) {
-        const link = await page.waitForSelector('a[href*="/p/"]', { timeout: 10000 }).catch(() => null);
-        if (link) {
-          const href = await link.getAttribute('href');
-          if (href) {
-            await page.goto(href.startsWith('http') ? href : `https://www.bol.com${href}`, { waitUntil: 'load' });
+      let isProductPage = await page.evaluate(`() => !!document.querySelector('[data-test="title"], h1.page-title')`);
+      
+      if (!isProductPage) {
+        const isSearchPage = await page.evaluate(`() => !!document.querySelector('.product-list, [data-test="product-list"]')`);
+        if (isSearchPage) {
+          const link = await page.waitForSelector('a[href*="/p/"]', { timeout: 10000 }).catch(() => null);
+          if (link) {
+            const href = await link.getAttribute('href');
+            if (href) {
+              await page.goto(href.startsWith('http') ? href : `https://www.bol.com${href}`, { waitUntil: 'networkidle' });
+            }
           }
         }
       }
 
-      await page.waitForTimeout(3000);
-      await page.evaluate(`() => window.scrollBy(0, 500)`);
-      await page.waitForTimeout(1000);
+      // Wait for product details to hydrate
+      await page.waitForSelector('[data-test="title"], h1.page-title', { timeout: 10000 }).catch(() => null);
+      await page.evaluate(`() => window.scrollBy(0, 800)`);
+      await page.waitForTimeout(2000);
 
       const liveDataRaw = await page.evaluate(`() => {
         const getT = (s) => document.querySelector(s)?.innerText?.trim() || "";
-        const title = getT('[data-test="title"]') || getT('h1.page-title') || document.title;
-        const priceStr = getT('[data-test="price"]') || getT('.promo-price') || "";
-        const priceMatch = priceStr.match(/(\\d+),(\\d{2})/) || priceStr.match(/(\\d+)/);
+        
+        // Advanced Title
+        const title = getT('[data-test="title"]') || getT('h1.page-title') || getT('.product-title') || document.title;
+        
+        // Advanced Price (Bol often splits price into whole and fraction)
+        let priceStr = "";
+        const priceEl = document.querySelector('[data-test="price"], .promo-price');
+        if (priceEl) {
+          const whole = priceEl.querySelector('.promo-price__whole')?.innerText?.trim() || "";
+          const fraction = priceEl.querySelector('.promo-price__fraction')?.innerText?.trim() || "";
+          if (whole) {
+            priceStr = whole + "." + (fraction || "00");
+          } else {
+            priceStr = priceEl.innerText.trim();
+          }
+        }
+        
+        if (!priceStr || priceStr === "N/A") {
+          priceStr = getT('.buying-block__price') || getT('.js_delivery_info .price');
+        }
+
+        const priceMatch = priceStr.match(/(\\d+)[,.](\\d{2})/) || priceStr.match(/(\\d+)/);
         const price = priceMatch ? (priceMatch[2] ? priceMatch[1] + "." + priceMatch[2] : priceMatch[1] + ".00") : "N/A";
 
+        // Images
         const images = [];
-        document.querySelectorAll('img[src*="media.s-bol.com"]').forEach(img => {
-          const src = img.src;
+        document.querySelectorAll('img[src*="media.s-bol.com"], [data-test="media-items"] img').forEach(img => {
+          const src = img.src || img.getAttribute('data-src');
           if (src && !images.includes(src)) images.push(src);
         });
 
+        // Bullets
         const bullets = [];
-        document.querySelectorAll('[data-test="product-features"] li, .product-features li').forEach(li => {
-          bullets.push(li.innerText.trim());
-        });
+        const bulletSelectors = [
+          '[data-test="product-features"] li',
+          '.product-features li',
+          '.specs-list li',
+          '.product-specifications li'
+        ];
+        for (const s of bulletSelectors) {
+          const els = document.querySelectorAll(s);
+          if (els.length > 0) {
+            els.forEach(li => bullets.push(li.innerText.trim()));
+            break;
+          }
+        }
 
-        const description = getT('[data-test="description"]') || getT('.js_product_description') || "";
+        // Description
+        const description = getT('[data-test="description"]') || getT('.js_product_description') || getT('.product-description');
 
         return {
           title,
@@ -298,9 +335,9 @@ async function startServer() {
           images: images || [],
           bullets: bullets || [],
           description,
-          variations: document.querySelectorAll('.js_attribute_selector, [data-test="variant-selector"]').length > 0 ? 1 : 0,
-          hasAPlus: document.querySelectorAll('.js_product_description img, .manufacturer-info img').length > 0 ? 1 : 0,
-          shipping: getT('[data-test="delivery-highlight"]') || getT('.js_delivery_info') || "N/A"
+          variations: document.querySelectorAll('.js_attribute_selector, [data-test="variant-selector"], .variant-selector').length > 0 ? 1 : 0,
+          hasAPlus: document.querySelectorAll('.js_product_description img, .manufacturer-info img, [data-test="description"] img').length > 0 ? 1 : 0,
+          shipping: getT('[data-test="delivery-highlight"]') || getT('.js_delivery_info') || getT('.shipping-delivery-promise') || "N/A"
         };
       }`);
 
