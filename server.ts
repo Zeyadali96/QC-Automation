@@ -271,15 +271,28 @@ async function startServer() {
             dateStr = dateStr.split('-')[0].trim();
           }
           
-          // Basic Dutch parsing for Amazon.nl
+          // Month maps for international Amazon sites
           const nlMonthMap: Record<string, number> = {
             'januari': 0, 'februari': 1, 'maart': 2, 'april': 3, 'mei': 4, 'juni': 5,
             'juli': 6, 'augustus': 7, 'september': 8, 'oktober': 9, 'november': 10, 'december': 11
           };
+          const enMonthMap: Record<string, number> = {
+            'january': 0, 'february': 1, 'march': 2, 'april': 3, 'may': 4, 'june': 5,
+            'july': 6, 'august': 7, 'september': 8, 'october': 9, 'november': 10, 'december': 11,
+            'jan': 0, 'feb': 1, 'mar': 2, 'apr': 3, 'may': 4, 'jun': 5, 'jul': 6, 'aug': 7, 'sep': 8, 'oct': 9, 'nov': 10, 'dec': 11
+          };
+          const deMonthMap: Record<string, number> = {
+            'januar': 0, 'februar': 1, 'märz': 2, 'april': 3, 'mai': 4, 'juni': 5,
+            'juli': 6, 'august': 7, 'september': 8, 'oktober': 9, 'november': 10, 'dezember': 11
+          };
+          const plMonthMap: Record<string, number> = {
+            'stycznia': 0, 'lutego': 1, 'marca': 2, 'kwietnia': 3, 'maja': 4, 'czerwca': 5,
+            'lipca': 6, 'sierpnia': 7, 'września': 8, 'października': 9, 'listopada': 10, 'grudnia': 11
+          };
 
           const s = dateStr.toLowerCase();
           const dayMatch = s.match(/\d+/);
-          const monthMatch = s.match(/[a-z]+/g) || [];
+          const monthMatch = s.match(/[a-zäöüßżćśóźńłęą]+/g) || [];
           
           let targetDate: Date | null = null;
 
@@ -288,24 +301,28 @@ async function startServer() {
             let monthIndex = -1;
             
             for (const monthName of monthMatch) {
-              if (nlMonthMap[monthName] !== undefined) {
-                monthIndex = nlMonthMap[monthName];
-                break;
-              }
+              if (nlMonthMap[monthName] !== undefined) monthIndex = nlMonthMap[monthName];
+              else if (enMonthMap[monthName] !== undefined) monthIndex = enMonthMap[monthName];
+              else if (deMonthMap[monthName] !== undefined) monthIndex = deMonthMap[monthName];
+              else if (plMonthMap[monthName] !== undefined) monthIndex = plMonthMap[monthName];
+              if (monthIndex !== -1) break;
             }
 
             if (monthIndex !== -1) {
               targetDate = new Date(currentYear, monthIndex, day);
             } else {
-              // Try standard parsing
               const parsed = new Date(dateStr + ` ${currentYear}`);
               if (!isNaN(parsed.getTime())) targetDate = parsed;
             }
           }
 
-          if (!targetDate && /morgen|tomorrow/i.test(s)) {
-            targetDate = new Date();
-            targetDate.setDate(targetDate.getDate() + 1);
+          if (!targetDate) {
+            if (/morgen|tomorrow|morgen|jutro/i.test(s)) {
+              targetDate = new Date();
+              targetDate.setDate(targetDate.getDate() + 1);
+            } else if (/vandaag|today|heute|dzisiaj/i.test(s)) {
+              targetDate = new Date();
+            }
           }
 
           if (targetDate) {
@@ -314,7 +331,8 @@ async function startServer() {
             todayClean.setHours(0, 0, 0, 0);
             const diff = differenceInDays(targetDate, todayClean);
             shippingDaysNum = diff >= 0 ? diff : 0;
-            shippingDaysStr = `${shippingDaysNum} Days`;
+            shippingDaysStr = `${shippingDaysNum} Day${shippingDaysNum === 1 ? '' : 's'}`;
+            console.log(`Calculated Shipping: ${shippingDaysStr} (diff: ${diff})`);
           }
         } catch (e) {
           console.error("Shipping parsing error:", e);
@@ -338,17 +356,27 @@ async function startServer() {
       }
       
       // Fallback selectors if primary didn't work
-      if (!priceDisplay || priceDisplay === "N/A") {
-        priceDisplay = $('#price_inside_buybox').text().trim() || 
-                       $('#priceblock_ourprice').text().trim() ||
-                       $('#priceblock_dealprice').text().trim() ||
-                       $('span.a-price span.a-offscreen').first().text().trim() ||
-                       $('span#priceblock_ourprice').text().trim() ||
-                       $('span.a-color-price').first().text().trim() ||
-                       $('input[name="items[0.base][customerVisiblePrice][displayString]"]').val() as string || 
-                       $('.a-price.a-text-price .a-offscreen').first().text().trim() ||
-                       $('.apexPriceToPay').text().trim() ||
-                       "N/A";
+      if (!priceDisplay || priceDisplay === "N/A" || priceDisplay === "") {
+        const fallbacks = [
+          '#price_inside_buybox',
+          '#priceblock_ourprice',
+          '#priceblock_dealprice',
+          'span.a-price span.a-offscreen',
+          'span.a-color-price',
+          '.apexPriceToPay',
+          '#corePrice_desktop_feature_div .a-offscreen',
+          '#buyNew_non_vat_price',
+          '.a-price[data-a-size="xl"] .a-offscreen',
+          '.a-price[data-a-size="l"] .a-offscreen'
+        ];
+        
+        for (const selector of fallbacks) {
+          const text = $(selector).first().text().trim();
+          if (text && text !== "" && text !== "N/A") {
+            priceDisplay = text;
+            break;
+          }
+        }
       }
 
       const variationSelectors = [
@@ -623,57 +651,46 @@ async function startServer() {
       
       if (isSearchPage) {
         console.log("Search page detected, looking for product link...");
-        // Try to find the first product link - more robust selector
         const firstProductSelector = 'a[href*="/p/"]:not([href*="javascript"]), .product-title a, a[data-test="product-title"], .product-item--grid a, .product-list a';
-        await page.waitForSelector(firstProductSelector, { timeout: 10000 }).catch(() => null);
         const el = await page.waitForSelector(firstProductSelector, { timeout: 10000 }).catch(() => null);
         const firstProductLink = el ? await el.getAttribute('href') : null;
         
         if (firstProductLink) {
           const productUrl = firstProductLink.startsWith('http') ? firstProductLink : `https://www.bol.com${firstProductLink}`;
           console.log(`Navigating to product URL: ${productUrl}`);
-          try {
-            await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-          } catch (e: any) {
-            if (e.name === 'TimeoutError') {
-              console.warn("Bol product navigation timed out, attempting to proceed...");
-            } else {
-              throw e;
-            }
-          }
-        } else {
-          console.warn("No product link found on search page.");
-          // Fallback: try to find any link that looks like a product link
-          const anyProductLink = await page.evaluate(function() {
-            // @ts-ignore
-            if (typeof __name === 'undefined') { (window as any).__name = (t: any, v: any) => t; }
-            const links = Array.from(document.querySelectorAll('a'));
-            const productLink = links.find(a => a.href.includes('/nl/nl/p/') && !a.href.includes('javascript'));
-            return productLink ? productLink.getAttribute('href') : null;
-          });
-          
-          if (anyProductLink) {
-            const productUrl = anyProductLink.startsWith('http') ? anyProductLink : `https://www.bol.com${anyProductLink}`;
-            console.log(`Fallback: Navigating to product URL: ${productUrl}`);
-            try {
-              await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-            } catch (e: any) {
-              if (e.name === 'TimeoutError') {
-                console.warn("Bol fallback product navigation timed out, attempting to proceed...");
-              } else {
-                throw e;
-              }
-            }
+          await page.goto(productUrl, { waitUntil: 'load', timeout: 60000 }).catch(() => null);
+        }
+      }
+
+      // 4. Wait for product content
+      console.log("Waiting for page load / network idle...");
+      await Promise.race([
+        page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => null),
+        page.waitForSelector('.pdp-header', { timeout: 20000 }).catch(() => null)
+      ]);
+
+      // Handle delayed search-to-pdp redirects or sticky search pages
+      const currentUrl = page.url();
+      if (currentUrl.includes('/s/') || currentUrl.includes('zoekresultaten')) {
+        console.log("Still on search page, attempting one final product click...");
+        const finalTrySelector = 'a[href*="/p/"]:not([href*="javascript"]), [data-test="product-title"]';
+        const el = await page.waitForSelector(finalTrySelector, { timeout: 5000 }).catch(() => null);
+        if (el) {
+          const href = await el.getAttribute('href');
+          if (href) {
+            const productUrl = href.startsWith('http') ? href : `https://www.bol.com${href}`;
+            await page.goto(productUrl, { waitUntil: 'load', timeout: 30000 }).catch(() => null);
           }
         }
       }
 
-      // Wait for network idle to ensure hydration
-      await page.waitForLoadState('load', { timeout: 15000 }).catch(() => null);
-      await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => null);
-
-      // Ensure we are on a product page (Mandatory visibility wait)
-      await page.waitForSelector('.pdp-header', { state: 'visible', timeout: 30000 });
+      // Final PDP Wait
+      console.log("Ensuring .pdp-header is visible...");
+      await page.waitForSelector('.pdp-header', { state: 'visible', timeout: 30000 }).catch(async (err) => {
+        const title = await page.title();
+        console.error(`PDP Header timeout. Page Title: ${title}, URL: ${page.url()}`);
+        throw new Error(`Bol.com Timeout: Could not find product header (Current: ${title})`);
+      });
 
       // Human-like delay after page load (3 seconds) to allow all JS to execute
       console.log("Waiting 3 seconds for JavaScript execution...");
