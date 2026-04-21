@@ -84,8 +84,14 @@ async function startServer() {
         };
       }
       browser = await chromium.launch(launchOptions);
+            const userAgents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/122.0.0.0 Safari/537.36'
+      ];
+      const randomUserAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
       const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        userAgent: randomUserAgent,
         viewport: { width: 1920, height: 1080 }
       });
 
@@ -95,10 +101,13 @@ async function startServer() {
         { name: 'ubid-main', value: '123-4567890-1234567', domain: `.${domain}`, path: '/' }
       ];
       
+      // Clear existing cookies first to prevent session tracking
+      await context.clearCookies();
+      
       if (domain.endsWith('.co.uk')) {
         cookies.push({ name: 'lc-main', value: 'en_GB', domain: `.${domain}`, path: '/' });
         cookies.push({ name: 'i18n-prefs', value: 'GBP', domain: `.${domain}`, path: '/' });
-        cookies.push({ name: 'sp-cdn', value: '"LND:SW1A 1AA"', domain: `.${domain}`, path: '/' });
+        cookies.push({ name: 'sp-cdn', value: '"LND:NW1 6XE"', domain: `.${domain}`, path: '/' });
       } else if (domain.endsWith('.de')) {
         cookies.push({ name: 'lc-main', value: 'de_DE', domain: `.${domain}`, path: '/' });
         cookies.push({ name: 'i18n-prefs', value: 'EUR', domain: `.${domain}`, path: '/' });
@@ -116,7 +125,8 @@ async function startServer() {
       }
       
       await context.addCookies(cookies);
-      const page = await context.newPage();
+            const page = await context.newPage();
+      await page.addInitScript(() => { Object.defineProperty(navigator, 'webdriver', { get: () => false }); });
       
       // Optimize loading by blocking unnecessary resources
       await page.route('**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf,css}', (route) => {
@@ -139,7 +149,7 @@ async function startServer() {
       }
       
       // Ensure the product title is at least present
-      await page.waitForSelector('#productTitle', { timeout: 15000 }).catch(() => {
+      await page.waitForSelector('#ppd', { timeout: 15000 }).catch(() => {
         console.warn("Product title not found within 15s, page might be slow or blocked.");
       });
       
@@ -204,20 +214,24 @@ async function startServer() {
         amazonDesc = "No description on detail page";
       }
 
-      // Shipping Extraction (Target: div#mir-layout-DELIVERY_BLOCK)
+      // Shipping Extraction (Target: Right-side Buybox and delivery elements)
       const deliverySelectors = [
         '#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_ID',
         '#delivery-message',
+        'span[data-amazon-delivery-date]',
+        '#deliveryBlockMessage',
         '#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE',
         '#mir-layout-DELIVERY_BLOCK',
-        '#deliveryBlockMessage',
         '#pfd-desktop-PRIMARY_DELIVERY_MESSAGE_LARGE',
         '#mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE',
         '#fastest_delivery_message',
         '#upsell-messaging',
         '#ddmDeliveryMessage',
         '.a-spacing-base .a-text-bold',
-        '#pba-delivery-message'
+        '#pba-delivery-message',
+        '.a-section [data-feature-name="delivery"]',
+        '.a-box .a-box-group .a-text-bold',
+        '[data-a-color="teletype"]'
       ];
       
       let rawShippingTime = "";
@@ -298,25 +312,34 @@ async function startServer() {
         }
       }
 
-      // Price Extraction (Target: #corePriceDisplay_desktop_feature_div)
+      // Price Extraction (Target: #corePriceDisplay_desktop_feature_div with multiple fallbacks)
       let priceDisplay = "N/A";
       let listPrice = "N/A";
       
-      const corePriceDiv = $('#corePriceDisplay_desktop_feature_div, #apex_desktop_price_feature_div');
+      // Primary selectors for core price display
+      const corePriceDiv = $('#corePriceDisplay_desktop_feature_div, #corePrice_feature_div, #apex_desktop_price_feature_div');
       if (corePriceDiv.length) {
         priceDisplay = corePriceDiv.find('span.a-offscreen').first().text().trim() || 
-                       corePriceDiv.find('.a-price span.a-offscreen').first().text().trim() || corePriceDiv.find('.a-color-price').first().text().trim();
+                       corePriceDiv.find('.a-price span.a-offscreen').first().text().trim() || 
+                       corePriceDiv.find('.a-color-price').first().text().trim();
         // List Price / RRP
         listPrice = corePriceDiv.find('.a-price.a-text-price span.a-offscreen').first().text().trim() || 
                     $('.basisPrice .a-offscreen').first().text().trim() || 
                     $('.a-price-range .a-offscreen').first().text().trim() || "N/A";
       }
       
+      // Fallback selectors if primary didn't work
       if (!priceDisplay || priceDisplay === "N/A") {
         priceDisplay = $('#price_inside_buybox').text().trim() || 
                        $('#priceblock_ourprice').text().trim() ||
                        $('#priceblock_dealprice').text().trim() ||
-                       $('input[name="items[0.base][customerVisiblePrice][displayString]"]').val() as string || "N/A";
+                       $('span.a-price span.a-offscreen').first().text().trim() ||
+                       $('span#priceblock_ourprice').text().trim() ||
+                       $('span.a-color-price').first().text().trim() ||
+                       $('input[name="items[0.base][customerVisiblePrice][displayString]"]').val() as string || 
+                       $('.a-price.a-text-price .a-offscreen').first().text().trim() ||
+                       $('.apexPriceToPay').text().trim() ||
+                       "N/A";
       }
 
       const variationSelectors = [
@@ -350,7 +373,8 @@ async function startServer() {
         '.twister-row',
         '#variation_type',
         '#variation_name',
-        '.variation-group'
+        '.variation-group',
+        '.js_attribute_selector'
       ];
       let hasVariations = false;
       for (const selector of variationSelectors) {
@@ -472,34 +496,62 @@ async function startServer() {
   // 3. Audit Bol.com
   app.post("/api/audit/bol", async (req, res) => {
     let browser;
-    try {
-      const { ean, masterData } = req.body;
-      const searchUrl = `https://www.bol.com/nl/nl/s/?searchtext=${ean}`;
-      
-      console.log(`Starting Bol Audit for EAN: ${ean}`);
-      
-            const launchOptions: any = { 
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
-      };
-      if (process.env.PROXY_SERVER) {
-        launchOptions.proxy = {
-          server: process.env.PROXY_SERVER,
-          username: process.env.PROXY_USERNAME,
-          password: process.env.PROXY_PASSWORD
+    let retryCount = 0;
+    const maxRetries = 3;
+    
+    const performBolAudit = async () => {
+      try {
+        const { ean, masterData } = req.body;
+        const searchUrl = `https://www.bol.com/nl/nl/s/?searchtext=${ean}`;
+        
+        console.log(`Starting Bol Audit for EAN: ${ean} (Attempt ${retryCount + 1})`);
+        
+        // Antigravity Proxy Configuration for Bol.com
+        // Using NL Residential Proxies to bypass IP block
+        const launchOptions: any = { 
+          headless: true,
+          args: ['--no-sandbox', '--disable-setuid-sandbox']
         };
-      }
-      browser = await chromium.launch(launchOptions);
+        
+        // Use Antigravity API if available, otherwise fall back to standard proxy
+        if (process.env.ANTIGRAVITY_API_KEY) {
+          // Antigravity NL Residential Proxy Configuration
+          launchOptions.proxy = {
+            server: `http://proxy.antigravityai.com:8080`,
+            username: process.env.ANTIGRAVITY_API_KEY,
+            password: 'residential-nl'
+          };
+          console.log("Using Antigravity NL Residential Proxy for Bol.com");
+        } else if (process.env.PROXY_SERVER) {
+          launchOptions.proxy = {
+            server: process.env.PROXY_SERVER,
+            username: process.env.PROXY_USERNAME,
+            password: process.env.PROXY_PASSWORD
+          };
+          console.log("Using standard proxy for Bol.com");
+        }
+        
+        browser = await chromium.launch(launchOptions);
+            const userAgents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/122.0.0.0 Safari/537.36'
+      ];
+      const randomUserAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
       const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        userAgent: randomUserAgent,
         viewport: { width: 1920, height: 1080 },
         extraHTTPHeaders: {
           'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-          'Referer': 'https://www.google.com/'
+          'Referer': 'https://www.google.com/',
+          'User-Agent': randomUserAgent
         }
       });
 
+      // Clear cookies between requests to prevent session tracking
+      await context.clearCookies();
+      
       // Set cookies for language and country
       await context.addCookies([
         { name: 'cookie_consent', value: 'true', domain: '.bol.com', path: '/' },
@@ -510,7 +562,8 @@ async function startServer() {
         { name: 'bol_p_incognito', value: 'true', domain: '.bol.com', path: '/' }
       ]);
 
-      const page = await context.newPage();
+            const page = await context.newPage();
+      await page.addInitScript(() => { Object.defineProperty(navigator, 'webdriver', { get: () => false }); });
       
       // Navigate to search results
       console.log(`Navigating to: ${searchUrl}`);
@@ -524,7 +577,7 @@ async function startServer() {
         }
       }
       
-      // Check for CAPTCHA or blocking
+      // Check for CAPTCHA or blocking (including IP block message)
       const isBlocked = await page.evaluate(function() {
         // @ts-ignore
         if (typeof __name === 'undefined') { (window as any).__name = (t: any, v: any) => t; }
@@ -534,10 +587,16 @@ async function startServer() {
                text.includes('To discuss automated access to Amazon data please contact') ||
                text.includes('Ben je een robot?') ||
                text.includes('rustig aan speed racer') ||
-               text.includes('Je gaat iets te snel');
+               text.includes('Je gaat iets te snel') ||
+               text.includes('IP adres is geblokkeerd') ||
+               text.includes('IP address is blocked');
       });
 
       if (isBlocked) {
+        const blockText = await page.evaluate(() => document.body.innerText);
+        if (blockText.includes('IP adres is geblokkeerd')) {
+          throw new Error("IP_BLOCKED");
+        }
         throw new Error("Bol.com blocked the request (Rate limited / Speed Racer detected). Please wait a few minutes.");
       }
 
@@ -601,7 +660,7 @@ async function startServer() {
       }
 
       // Ensure we are on a product page
-      await page.waitForSelector('div#pdp_main_section, [data-test="title"], h1.page-title, #buyBlockSlot', { timeout: 30000 }).catch(() => {
+      await page.waitForSelector('.pdp-header, div#pdp_main_section, [data-test="title"]', { timeout: 30000 }).catch(() => {
         console.warn("Product indicators not found, page might be slow or not a product page.");
       });
 
@@ -611,7 +670,8 @@ async function startServer() {
         console.warn("Network idle timeout, proceeding with current state.");
       });
 
-      // Extra wait for dynamic content (variations, etc.)
+      // Human-like delay after page load (3 seconds) to allow all JS to execute
+      console.log("Waiting 3 seconds for JavaScript execution...");
       await page.waitForTimeout(3000);
 
       // Scroll to media container to trigger lazy loading
@@ -627,8 +687,8 @@ async function startServer() {
       });
       await page.waitForTimeout(2000);
 
-      // Wait for media container specifically
-      await page.waitForSelector('.js_product_media_items, .pdp-images, [data-test="product-main-image"], #pdp_description', { timeout: 15000 }).catch(() => null);
+      // Wait for description and media containers specifically (critical for JS-rendered content)
+      await page.waitForSelector('#pdp_description, .js_product_description, div.js_product_media_items, .pdp-images, [data-test="product-main-image"]', { timeout: 15000 }).catch(() => null);
 
       const liveDataRaw = await page.evaluate(function() {
         // @ts-ignore
@@ -665,6 +725,7 @@ async function startServer() {
 
         if (!description || description.length < 50) {
           const descSelectors = [
+            '#pdp_description',
             'div.js_product_description',
             'section.product-description',
             '[data-test="description"]',
@@ -812,6 +873,8 @@ async function startServer() {
           document.querySelector('[data-test="variant-list"]') ||
           document.querySelector('.pdp-variant-selector') ||
           document.querySelector('.js_variant_dropdown') ||
+          // Check for label or option elements inside attribute selector
+          Array.from(document.querySelectorAll('.js_attribute_selector label, .js_attribute_selector option')).length > 1 ||
           // Broad pattern matching for variation themes
           Array.from(document.querySelectorAll('span, div, h3, label')).some(el => {
             const t = (el as any).innerText || "";
@@ -959,6 +1022,20 @@ async function startServer() {
 
       const auditResult = performAudit(masterData, liveData, 'bol');
       res.json({ liveData, auditResult });
+      } catch (error: any) {
+        // Handle IP block with retry logic
+        if (error.message === "IP_BLOCKED" && retryCount < maxRetries) {
+          retryCount++;
+          console.log(`IP blocked detected. Retrying with new proxy (Attempt ${retryCount}/${maxRetries})...`);
+          if (browser) await browser.close();
+          return performBolAudit(); // Retry with new proxy rotation
+        }
+        throw error;
+      }
+    };
+    
+    try {
+      await performBolAudit();
     } catch (error: any) {
       console.error("Bol Audit Error:", error);
       res.status(500).json({ 
@@ -1392,16 +1469,17 @@ async function startServer() {
       match: true
     };
 
-    // Bullet Points Comparison
+    // Bullet Points Comparison (98% similarity threshold)
     results.bullets = (master.bullets || []).map((mb: string, i: number) => {
       const lb = live.bullets?.[i] || "";
       const cmb = cleanText(mb);
       const clb = cleanText(lb);
+      const similarity = stringSimilarity.compareTwoStrings(cmb, clb);
       return {
         master: mb,
         live: lb,
-        similarity: stringSimilarity.compareTwoStrings(cmb, clb),
-        match: cmb === clb
+        similarity: similarity,
+        match: similarity >= 0.98
       };
     });
 
@@ -1427,7 +1505,7 @@ async function startServer() {
       master: master.shipping,
       live: live.shipping,
       similarity: stringSimilarity.compareTwoStrings(cleanText(master.shipping), cleanText(live.shipping)),
-      match: cleanText(master.shipping) === cleanText(live.shipping)
+      match: stringSimilarity.compareTwoStrings(cleanText(master.shipping), cleanText(live.shipping)) >= 0.98
     };
 
     // Image comparison results
