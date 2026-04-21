@@ -660,10 +660,10 @@ export default function App() {
                                           <div className="bg-white p-4 rounded-xl border border-slate-200">
                                             <div className="text-[10px] font-bold text-slate-400 uppercase mb-3 flex items-center justify-between">
                                               <span>Master Images</span>
-                                              <span className="bg-slate-100 px-2 py-0.5 rounded text-slate-500">{auditResults[idx].auditResult.images.master.length}</span>
+                                              <span className="bg-slate-100 px-2 py-0.5 rounded text-slate-500">{(auditResults[idx]?.auditResult?.images?.master?.length) || 0}</span>
                                             </div>
                                             <div className="grid grid-cols-3 gap-2">
-                                              {auditResults[idx].auditResult.images.master.slice(0, 6).map((img: string, i: number) => (
+                                              {(auditResults[idx]?.auditResult?.images?.master || []).slice(0, 6).map((img: string, i: number) => (
                                                 <div key={i} className="aspect-square bg-slate-50 border border-slate-100 rounded-lg overflow-hidden relative group">
                                                   <img 
                                                     src={getProxiedUrl(img)} 
@@ -681,7 +681,7 @@ export default function App() {
                                                   </div>
                                                 </div>
                                               ))}
-                                              {auditResults[idx].auditResult.images.master.length === 0 && (
+                                              {(!auditResults[idx]?.auditResult?.images?.master || auditResults[idx]?.auditResult?.images?.master?.length === 0) && (
                                                 <div className="col-span-3 text-[10px] text-slate-400 italic py-4 text-center">No master images</div>
                                               )}
                                             </div>
@@ -693,17 +693,17 @@ export default function App() {
                                               <span>Live Marketplace Images</span>
                                               <button 
                                                 onClick={() => setGalleryModal({ 
-                                                  images: auditResults[idx].liveData.images, 
-                                                  title: auditResults[idx].liveData.title 
+                                                  images: auditResults[idx]?.liveData?.images || [], 
+                                                  title: auditResults[idx]?.liveData?.title || "Gallery"
                                                 })}
                                                 className="text-indigo-600 hover:underline flex items-center gap-1"
                                               >
-                                                View Gallery ({auditResults[idx].liveData.images?.length || 0})
+                                                View Gallery ({(auditResults[idx]?.liveData?.images?.length) || 0})
                                               </button>
                                             </div>
                                             
                                             {/* Main Image Highlight */}
-                                            {auditResults[idx].liveData.images && auditResults[idx].liveData.images.length > 0 && (
+                                            {auditResults[idx]?.liveData?.images && auditResults[idx]?.liveData?.images?.length > 0 && (
                                               <div className="mb-4 aspect-square bg-slate-50 border border-slate-200 rounded-xl overflow-hidden relative group">
                                                 <div className="absolute top-2 left-2 z-10 bg-indigo-600 text-white text-[9px] font-bold px-2 py-0.5 rounded shadow-sm uppercase">Main View</div>
                                                 <img 
@@ -722,10 +722,15 @@ export default function App() {
                                                 </div>
                                               </div>
                                             )}
+                                            {(!auditResults[idx]?.liveData?.images || auditResults[idx]?.liveData?.images?.length === 0) && (
+                                               <div className="mb-4 aspect-square bg-slate-50 border border-slate-200 rounded-xl overflow-hidden flex items-center justify-center">
+                                                  <ImageIcon className="w-12 h-12 text-slate-200" />
+                                               </div>
+                                            )}
 
                                             <div className="text-[10px] font-bold text-slate-400 uppercase mb-2">Gallery View</div>
                                             <div className="grid grid-cols-4 gap-2">
-                                              {auditResults[idx].liveData.images?.slice(1, 9).map((img: string, i: number) => (
+                                              {(auditResults[idx]?.liveData?.images || []).slice(1, 9).map((img: string, i: number) => (
                                                 <div key={i} className="aspect-square bg-slate-50 border border-slate-100 rounded-lg overflow-hidden relative group">
                                                   <img 
                                                     src={getProxiedUrl(img)} 
@@ -743,7 +748,7 @@ export default function App() {
                                                   </div>
                                                 </div>
                                               ))}
-                                              {(!auditResults[idx].liveData.images || auditResults[idx].liveData.images.length <= 1) && (
+                                              {(!auditResults[idx]?.liveData?.images || auditResults[idx]?.liveData?.images?.length <= 1) && (
                                                 <div className="col-span-4 text-[10px] text-slate-400 italic py-4 text-center">No secondary images</div>
                                               )}
                                             </div>
