@@ -107,11 +107,11 @@ async function startServer() {
       await page.waitForTimeout(3000);
       
       // Extraction logic - Using page.evaluate for better accuracy after hydration
-      const liveData = await page.evaluate(() => {
-        const getT = (s: string) => document.querySelector(s)?.textContent?.trim() || "";
+      const liveData = await page.evaluate(`() => {
+        const getT = (s) => document.querySelector(s)?.textContent?.trim() || "";
         
         // 1. Images
-        const images: string[] = [];
+        const images = [];
         const mainImg = document.querySelector('#landingImage') || document.querySelector('#imgTagWrapperId img') || document.querySelector('#main-image');
         if (mainImg) {
           const src = mainImg.getAttribute('data-old-hires') || mainImg.getAttribute('src');
@@ -124,7 +124,7 @@ async function startServer() {
         });
 
         // 2. Bullets
-        const bullets: string[] = [];
+        const bullets = [];
         document.querySelectorAll('#feature-bullets li span.a-list-item').forEach(el => {
           const t = el.textContent?.trim() || "";
           if (t.length > 5) bullets.push(t);
@@ -152,7 +152,7 @@ async function startServer() {
           hasAPlus: !!document.querySelector('.aplus-v2, #aplus, #premium-aplus'),
           variations: !!document.querySelector('#twister, #inline-twister-row-size_name, #inline-twister-row-color_name')
         };
-      });
+      }`);
 
       // Post-process images
       liveData.images = getUniqueImages(liveData.images);
@@ -220,8 +220,8 @@ async function startServer() {
       await page.waitForTimeout(3000);
       await page.evaluate(() => window.scrollBy(0, 500));
       
-      const liveData = await page.evaluate(() => {
-        const getT = (s: string) => document.querySelector(s)?.textContent?.trim() || "";
+      const liveData = await page.evaluate(`() => {
+        const getT = (s) => document.querySelector(s)?.textContent?.trim() || "";
         
         // Handle Bol price whole/fraction
         let price = "N/A";
@@ -229,16 +229,16 @@ async function startServer() {
         if (priceEl) {
           const whole = priceEl.querySelector('.promo-price__whole')?.textContent?.trim() || "";
           const fraction = priceEl.querySelector('.promo-price__fraction')?.textContent?.trim() || "";
-          price = whole ? `${whole}.${fraction || '00'}` : priceEl.textContent?.trim().replace(',', '.') || "N/A";
+          price = whole ? whole + "." + (fraction || '00') : priceEl.textContent?.trim().replace(',', '.') || "N/A";
         }
 
-        const images: string[] = [];
+        const images = [];
         document.querySelectorAll('img[src*="media.s-bol.com"]').forEach(img => {
           const src = img.getAttribute('src');
           if (src && !images.includes(src)) images.push(src);
         });
 
-        const bullets: string[] = [];
+        const bullets = [];
         document.querySelectorAll('[data-test="product-features"] li').forEach(li => {
           bullets.push(li.textContent?.trim() || "");
         });
@@ -253,7 +253,7 @@ async function startServer() {
           hasAPlus: !!document.querySelector('.manufacturer-info, .js_product_description img'),
           variations: !!document.querySelector('[data-test="variant-selector"], .variant-selector')
         };
-      });
+      }`);
 
       liveData.images = getUniqueImages(liveData.images);
       const auditResult = performAudit(masterData, liveData, 'bol');
