@@ -110,8 +110,8 @@ async function startServer() {
       await page.goto(url, { waitUntil: 'load', timeout: 60000 });
       await page.waitForTimeout(3000);
 
-      const livedata = await page.evaluate(() => {
-        const getT = (s: string) => (document.querySelector(s) as any)?.innerText.trim() || "";
+      const livedata = await page.evaluate(`() => {
+        const getT = (s) => document.querySelector(s)?.innerText?.trim() || "";
         
         // Price Extraction
         const priceSelectors = [
@@ -132,7 +132,7 @@ async function startServer() {
         // Clean price: handle 10,99 (EU) and 10.99 (US/UK)
         let price = "N/A";
         if (priceText) {
-          const match = priceText.match(/(\d+[,.]\d{2})/) || priceText.match(/(\d+)/);
+          const match = priceText.match(/(\\d+[,.]\\d{2})/) || priceText.match(/(\\d+)/);
           if (match) {
             price = match[0].replace(',', '.');
           }
@@ -155,7 +155,7 @@ async function startServer() {
         }
 
         // Images
-        const images: string[] = [];
+        const images = [];
         const imgElements = document.querySelectorAll('#landingImage, #imgTagWrapperId img, .a-dynamic-image, #main-image, .imgTagWrapper img');
         imgElements.forEach(el => {
           const src = el.getAttribute('data-old-hires') || el.getAttribute('src') || el.getAttribute('data-a-dynamic-image');
@@ -169,9 +169,9 @@ async function startServer() {
         });
 
         // Bullets
-        const bullets: string[] = [];
+        const bullets = [];
         document.querySelectorAll('#feature-bullets ul li span').forEach(el => {
-          const t = (el as any).innerText.trim();
+          const t = el.innerText?.trim() || "";
           if (t && t.length > 5 && !t.includes('fits')) bullets.push(t);
         });
 
@@ -187,7 +187,7 @@ async function startServer() {
           shipping,
           price
         };
-      });
+      }`);
 
       // Cleanup images in server-side helper
       livedata.images = (globalThis as any).getUniqueImages(livedata.images);
