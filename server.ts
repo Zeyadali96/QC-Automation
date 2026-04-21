@@ -72,10 +72,18 @@ async function startServer() {
       const domain = marketplace || 'amazon.com';
       const url = `https://www.${domain}/dp/${asin}`;
       
-      browser = await chromium.launch({ 
+            const launchOptions: any = { 
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox']
-      });
+      };
+      if (process.env.PROXY_SERVER) {
+        launchOptions.proxy = {
+          server: process.env.PROXY_SERVER,
+          username: process.env.PROXY_USERNAME,
+          password: process.env.PROXY_PASSWORD
+        };
+      }
+      browser = await chromium.launch(launchOptions);
       const context = await browser.newContext({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         viewport: { width: 1920, height: 1080 }
@@ -198,6 +206,8 @@ async function startServer() {
 
       // Shipping Extraction (Target: div#mir-layout-DELIVERY_BLOCK)
       const deliverySelectors = [
+        '#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_ID',
+        '#delivery-message',
         '#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE',
         '#mir-layout-DELIVERY_BLOCK',
         '#deliveryBlockMessage',
@@ -295,7 +305,7 @@ async function startServer() {
       const corePriceDiv = $('#corePriceDisplay_desktop_feature_div, #apex_desktop_price_feature_div');
       if (corePriceDiv.length) {
         priceDisplay = corePriceDiv.find('span.a-offscreen').first().text().trim() || 
-                       corePriceDiv.find('.a-price span.a-offscreen').first().text().trim();
+                       corePriceDiv.find('.a-price span.a-offscreen').first().text().trim() || corePriceDiv.find('.a-color-price').first().text().trim();
         // List Price / RRP
         listPrice = corePriceDiv.find('.a-price.a-text-price span.a-offscreen').first().text().trim() || 
                     $('.basisPrice .a-offscreen').first().text().trim() || 
@@ -310,6 +320,8 @@ async function startServer() {
       }
 
       const variationSelectors = [
+        '.swatches',
+        '.inline-twister-row',
         '#twister',
         '#inline-twister-row-size_name',
         '#inline-twister-row-color_name',
@@ -466,10 +478,18 @@ async function startServer() {
       
       console.log(`Starting Bol Audit for EAN: ${ean}`);
       
-      browser = await chromium.launch({ 
+            const launchOptions: any = { 
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox']
-      });
+      };
+      if (process.env.PROXY_SERVER) {
+        launchOptions.proxy = {
+          server: process.env.PROXY_SERVER,
+          username: process.env.PROXY_USERNAME,
+          password: process.env.PROXY_PASSWORD
+        };
+      }
+      browser = await chromium.launch(launchOptions);
       const context = await browser.newContext({
         userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         viewport: { width: 1920, height: 1080 },
@@ -608,7 +628,7 @@ async function startServer() {
       await page.waitForTimeout(2000);
 
       // Wait for media container specifically
-      await page.waitForSelector('.js_product_media_items, .pdp-images, [data-test="product-main-image"]', { timeout: 10000 }).catch(() => null);
+      await page.waitForSelector('.js_product_media_items, .pdp-images, [data-test="product-main-image"], #pdp_description', { timeout: 15000 }).catch(() => null);
 
       const liveDataRaw = await page.evaluate(function() {
         // @ts-ignore
@@ -645,6 +665,8 @@ async function startServer() {
 
         if (!description || description.length < 50) {
           const descSelectors = [
+            'div.js_product_description',
+            'section.product-description',
             '[data-test="description"]',
             '[data-test="product-description"]',
             '.js_product_description',
@@ -719,7 +741,9 @@ async function startServer() {
         // 4. Shipping
         let shippingText = "N/A";
         // Look for "Uiterlijk [Date] in huis" or "Morgen in huis"
-        const deliveryPromise = document.querySelector('.delivery-promise') || 
+        const deliveryPromise = document.querySelector('.js_delivery_info') || 
+                                document.querySelector('.ui-delivery-info') || 
+                                document.querySelector('.delivery-promise') || 
                                 document.querySelector('[data-test="delivery-highlight"]') || 
                                 document.querySelector('.delivery-delivery-time') || 
                                 document.querySelector('[data-test="delivery-promise"]') ||
@@ -779,6 +803,7 @@ async function startServer() {
         
         // 6. Variations & A+
         const hasVariations = !!(
+          document.querySelector('.js_attribute_selector') ||
           document.querySelector('[data-test="variant-selector"]') || 
           document.querySelector('.variant-selector') || 
           document.querySelector('.js_bundle_as_variant_selector') ||
