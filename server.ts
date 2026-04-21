@@ -66,15 +66,21 @@ async function startServer() {
 
   // 2. Audit Amazon
   app.post("/api/audit/amazon", async (req, res) => {
-    let browser;
+    let browser: any;
     try {
       const { asin, marketplace, masterData } = req.body;
       const domain = marketplace || 'amazon.com';
       const url = `https://www.${domain}/dp/${asin}`;
       
-            const launchOptions: any = { 
+      const launchOptions: any = { 
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: [
+          '--no-sandbox', 
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--disable-features=IsolateOrigins,site-per-process'
+        ]
       };
       if (process.env.ANTIGRAVITY_API_KEY) {
         let region = 'us';
@@ -84,325 +90,63 @@ async function startServer() {
         launchOptions.proxy = {
           server: `http://${process.env.ANTIGRAVITY_API_KEY}:residential-${region}@proxy.antigravityai.com:8080`
         };
-      } else if (process.env.PROXY_SERVER) {
-        launchOptions.proxy = {
-          server: process.env.PROXY_SERVER,
-          username: process.env.PROXY_USERNAME,
-          password: process.env.PROXY_PASSWORD
-        };
       }
+      
       browser = await chromium.launch(launchOptions);
-                  const userAgents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
-      ];
-      const randomUserAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
       const context = await browser.newContext({
-        userAgent: randomUserAgent,
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
         viewport: { width: 1920, height: 1080 }
       });
-
-      // Set regional postcodes and language preferences
-      const cookies = [
-        { name: 'session-id', value: '123-4567890-1234567', domain: `.${domain}`, path: '/' },
-        { name: 'ubid-main', value: '123-4567890-1234567', domain: `.${domain}`, path: '/' }
-      ];
+      const page = await context.newPage();
       
-      // Clear existing cookies first to prevent session tracking
-      await context.clearCookies();
-      
-      if (domain.endsWith('.co.uk')) {
-        cookies.push({ name: 'lc-main', value: 'en_GB', domain: `.${domain}`, path: '/' });
-        cookies.push({ name: 'i18n-prefs', value: 'GBP', domain: `.${domain}`, path: '/' });
-        cookies.push({ name: 'sp-cdn', value: '"LND:NW1 6XE"', domain: `.${domain}`, path: '/' });
-      } else if (domain.endsWith('.de')) {
-        cookies.push({ name: 'lc-main', value: 'de_DE', domain: `.${domain}`, path: '/' });
-        cookies.push({ name: 'i18n-prefs', value: 'EUR', domain: `.${domain}`, path: '/' });
-        cookies.push({ name: 'sp-cdn', value: '"BER:10117"', domain: `.${domain}`, path: '/' });
-      } else if (domain.endsWith('.pl')) {
-        cookies.push({ name: 'lc-main', value: 'pl_PL', domain: `.${domain}`, path: '/' });
-        cookies.push({ name: 'i18n-prefs', value: 'PLN', domain: `.${domain}`, path: '/' });
-        cookies.push({ name: 'sp-cdn', value: '"WAW:00-001"', domain: `.${domain}`, path: '/' });
-      } else if (domain.endsWith('.se')) {
-        cookies.push({ name: 'lc-main', value: 'sv_SE', domain: `.${domain}`, path: '/' });
-        cookies.push({ name: 'i18n-prefs', value: 'SEK', domain: `.${domain}`, path: '/' });
-        cookies.push({ name: 'sp-cdn', value: '"STO:111 20"', domain: `.${domain}`, path: '/' });
-      } else {
-        cookies.push({ name: 'lc-main', value: 'en_US', domain: `.${domain}`, path: '/' });
-      }
-      
-      await context.addCookies(cookies);
-            const page = await context.newPage();
-      await page.addInitScript(() => { Object.defineProperty(navigator, 'webdriver', { get: () => false }); });
-      
-      // Optimize loading by blocking unnecessary resources
-      await page.route('**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf,css}', (route) => {
-        const url = route.request().url();
-        // Allow main product images if needed, but for scraping HTML we usually don't need them
-        // However, we extract image URLs from the script tags or landingImage src, so we don't need the actual image files to load.
-        route.abort();
-      });
-
-      // Navigate and wait for initial load
-      try {
-        await page.goto(url, { waitUntil: 'load', timeout: 60000 });
-        // Only trigger the extraction after networkidle (Playwright's equivalent of networkidle2)
-        await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => null);
-      } catch (e: any) {
-        if (e.name === 'TimeoutError') {
-          console.warn("Initial navigation timed out, attempting to proceed with current content...");
-        } else {
-          throw e;
-        }
-      }
-      
-      // Mandatory "Wait-Until" Logic: Ensure the product display is fully visible
-      await page.waitForSelector('#ppd', { state: 'visible', timeout: 15000 }).catch(() => {
-        console.warn("Product display (#ppd) not fully visible within 15s, proceeding anyway.");
-      });
-      
-      // Check for CAPTCHA
-      const isCaptcha = await page.evaluate(function() {
-        // @ts-ignore
-        if (typeof __name === 'undefined') { (window as any).__name = (t: any, v: any) => t; }
-        return document.title.includes('Robot Check') || 
-               document.body.innerText.includes('Type the characters you see in this image') ||
-               document.body.innerText.includes('To discuss automated access to Amazon data please contact');
-      });
-      
-      if (isCaptcha) {
-        throw new Error("Amazon blocked the request with a CAPTCHA. Please try again later.");
-      }
-
-      // Wait a bit more for dynamic elements (variations, etc.)
+      console.log(`Auditing Amazon: ${url}`);
+      await page.goto(url, { waitUntil: 'load', timeout: 60000 });
       await page.waitForTimeout(3000);
-      
-      // Get content
+
       const content = await page.content();
       const $ = cheerio.load(content);
-
-      // 1. Image Extraction (Extracting main and secondary images, deduplicating via getUniqueImages)
-      let images: string[] = [];
-      const landingImg = $('#landingImage').attr('data-old-hires') || $('#landingImage').attr('src');
-      if (landingImg && landingImg.startsWith('http')) images.push(landingImg);
       
-      $('#altImages ul li img').each((_, el) => {
-        const url = $(el).attr('data-old-hires') || $(el).attr('src');
-        if (url && url.startsWith('http')) {
-          images.push(url);
-        }
-      });
-      const uniqueImages = getUniqueImages(images);
-
-      // A+ Content Extraction (Exclude Brand Stories)
-      const aPlusContainer = $('.aplus-v2, #aplus, #premium-aplus').not('#brandStory_feature_div, .aplus-brand-story-v2, .aplus-brand-story-v1');
-      
-      // Remove Brand Story sections if they exist within the container
-      aPlusContainer.find('.aplus-brand-story-v2, .aplus-brand-story-v1, #brandStory_feature_div, .premium-brand-story, [class*="brand-story"]').remove();
-      
-      const hasAPlus = aPlusContainer.length > 0;
-      let amazonDesc = $('#productDescription').text().trim();
-      
-      // Extract A+ text ONLY (Simpler revert)
-      let aPlusData = null;
-      if (hasAPlus) {
-        const aPlusText = aPlusContainer.find('p, h3, h4, span, li').map((_, el) => {
-          if (el.tagName === 'img') return '';
-          if ($(el).closest('.aplus-brand-story-v2, .aplus-brand-story-v1, #brandStory_feature_div, .premium-brand-story, [class*="brand-story"]').length > 0) return '';
-          return $(el).text().trim();
-        }).get().filter(t => t.length > 0).join('\n\n');
-        
-        aPlusData = { text: aPlusText };
-      }
-
-      // If description is empty but A+ is present, use A+ data
-      
-      // Extraction Results
-      const liveDataRaw: any = {};
-      
-      // 1. Title
-      liveDataRaw.title = $('#productTitle').text().trim() || "";
-      
-      // 2. Images
-      const images: string[] = [];
-      const imgSelectors = [
-        '#imgTagWrapperId img',
-        '#landingImage',
-        '.a-dynamic-image',
-        '#main-image',
-        '.imgTagWrapper img'
-      ];
-      for (const s of imgSelectors) {
-        const src = $(s).attr('data-old-hires') || $(s).attr('src') || $(s).attr('data-a-dynamic-image');
+      const imagesList: string[] = [];
+      $('#landingImage, #imgTagWrapperId img, .a-dynamic-image, #main-image, .imgTagWrapper img').each((_, el) => {
+        const src = $(el).attr('data-old-hires') || $(el).attr('src') || $(el).attr('data-a-dynamic-image');
         if (src) {
           if (src.startsWith('{')) {
-             try { images.push(Object.keys(JSON.parse(src))[0]); } catch(e){}
+             try { imagesList.push(Object.keys(JSON.parse(src))[0]); } catch(e){}
           } else {
-            images.push(src);
+             imagesList.push(src);
           }
         }
-      }
-      liveDataRaw.images = getUniqueImages(images);
-      
-      // 3. Bullets
-      const bullets: string[] = [];
-      $('#feature-bullets ul li span').each((i, el) => {
-        const text = $(el).text().trim();
-        if (text && !text.includes('Make sure this fits')) bullets.push(text);
       });
-      liveDataRaw.bullets = bullets;
-      
-      // 4. Description
-      liveDataRaw.description = $('#productDescription').text().trim() || "";
-      
-      // 5. A+ Content Detection
-      liveDataRaw.hasAPlus = $('#aplus').length > 0 || $('.aplus-v2').length > 0;
-      
-      // 6. Variations
-      liveDataRaw.variations = $('#twister').length > 0 || $('#variation_color_name').length > 0;
 
-      // 7. Shipping Time Extraction
-      let rawShippingTime = "";
-      // Shipping Extraction (Target: Right-side Buybox and delivery elements)
-      const deliverySelectors = [
-        'div#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_ID',
-        'span[data-amazon-delivery-date]',
-        'div#deliveryBlockMessage',
-        '#delivery-message',
-        '#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE',
-        '#mir-layout-DELIVERY_BLOCK',
-        '#pfd-desktop-PRIMARY_DELIVERY_MESSAGE_LARGE',
-        '#mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE',
-        '#fastest_delivery_message',
-        '#upsell-messaging',
-        '#ddmDeliveryMessage',
-        '.a-spacing-base .a-text-bold',
-        '#pba-delivery-message',
-        '.a-section [data-feature-name="delivery"]',
-        '.a-box .a-box-group .a-text-bold',
-        '[data-a-color="teletype"]'
-      ];
+      const bulletsList: string[] = [];
+      $('#feature-bullets ul li span').each((_, el) => {
+        const t = $(el).text().trim();
+        if (t && t.length > 5 && !t.includes('fits')) bulletsList.push(t);
+      });
 
-      for (const s of deliverySelectors) {
-         const t = $(s).text().trim();
-         if (t) {
-           rawShippingTime = t;
-           break;
-         }
-      }
+      const hasAPlus = $('.aplus-v2, #aplus, #premium-aplus').length > 0;
       
-      let shippingDaysNum = 0;
-      let shippingDaysStr = "N/A";
-      
-      if (rawShippingTime) {
-        try {
-          let dateStr = rawShippingTime;
-          const currentYear = new Date().getFullYear();
-          if (dateStr.includes('-')) {
-            dateStr = dateStr.split('-')[0].trim();
-          }
-          
-          // Basic Dutch parsing for Amazon.nl
-          const nlMonthMap: Record<string, number> = {
-            'januari': 0, 'februari': 1, 'maart': 2, 'april': 3, 'mei': 4, 'juni': 5,
-            'juli': 6, 'augustus': 7, 'september': 8, 'oktober': 9, 'november': 10, 'december': 11
-          };
+      const livedata = {
+        title: $('#productTitle').text().trim(),
+        images: getUniqueImages(imagesList),
+        bullets: bulletsList,
+        description: $('#productDescription').text().trim() || (hasAPlus ? "A+ Content Present" : "No description"),
+        hasAPlus: hasAPlus,
+        variations: $('#twister').length > 0 ? 1 : 0,
+        shipping: "N/A",
+        price: "N/A"
+      };
 
-          const s = dateStr.toLowerCase();
-          const dayMatch = s.match(/\d+/);
-          const monthMatch = s.match(/[a-z]+/g) || [];
-          
-          let targetDate: Date | null = null;
+      const priceText = $('#price_inside_buybox, .a-price span.a-offscreen, #priceblock_ourprice, #corePrice_feature_div .a-offscreen').first().text().trim();
+      const priceMatch = priceText.replace(/[^\d,. ]/g, '').match(/(\d+[.,]\d{2})/) || priceText.match(/(\d+)/);
+      livedata.price = priceMatch ? priceMatch[0].replace(',', '.') : "N/A";
 
-          if (dayMatch) {
-            const day = parseInt(dayMatch[0]);
-            let monthIndex = -1;
-            
-            for (const monthName of monthMatch) {
-              if (nlMonthMap[monthName] !== undefined) {
-                monthIndex = nlMonthMap[monthName];
-                break;
-              }
-            }
+      // Shipping
+      const shippingText = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_ID, #deliveryBlockMessage, #delivery-message').first().text().trim();
+      livedata.shipping = shippingText || "N/A";
 
-            if (monthIndex !== -1) {
-              targetDate = new Date(currentYear, monthIndex, day);
-            } else {
-              // Try standard parsing
-              const parsed = new Date(dateStr + ` ${currentYear}`);
-              if (!isNaN(parsed.getTime())) targetDate = parsed;
-            }
-          }
-
-          if (!targetDate && /morgen|tomorrow/i.test(s)) {
-            targetDate = new Date();
-            targetDate.setDate(targetDate.getDate() + 1);
-          }
-
-          if (targetDate) {
-            targetDate.setHours(0, 0, 0, 0);
-            const todayClean = new Date();
-            todayClean.setHours(0, 0, 0, 0);
-            const diff = differenceInDays(targetDate, todayClean);
-            shippingDaysNum = diff >= 0 ? diff : 0;
-            shippingDaysStr = `${shippingDaysNum} Days`;
-          }
-        } catch (e) {
-          console.error("Shipping parsing error:", e);
-        }
-      }
-      liveDataRaw.shipping = rawShippingTime;
-      liveDataRaw.shippingDaysString = shippingDaysStr;
-      
-      // Price Extraction (Target: #corePriceDisplay_desktop_feature_div with multiple fallbacks)
-      let priceDisplay = "N/A";
-      let listPrice = "N/A";
-      
-      // Primary selectors for core price display
-      const corePriceDiv = $('span.a-offscreen, span#price_inside_buybox, div#corePrice_feature_div');
-      if (corePriceDiv.length) {
-        priceDisplay = corePriceDiv.find('span.a-offscreen').first().text().trim() || 
-                       corePriceDiv.find('.a-price span.a-offscreen').first().text().trim() || 
-                       corePriceDiv.find('.a-color-price').first().text().trim();
-        // List Price / RRP
-        listPrice = corePriceDiv.find('.a-price.a-text-price span.a-offscreen').first().text().trim() || 
-                    $('.basisPrice .a-offscreen').first().text().trim() || 
-                    $('.a-price-range .a-offscreen').first().text().trim() || "N/A";
-      }
-      
-      // Fallback selectors if primary didn't work
-      if (!priceDisplay || priceDisplay === "N/A") {
-        priceDisplay = $('#price_inside_buybox').text().trim() || 
-                       $('#priceblock_ourprice').text().trim() ||
-                       $('#priceblock_dealprice').text().trim() ||
-                       $('span.a-price span.a-offscreen').first().text().trim() ||
-                       $('span#priceblock_ourprice').text().trim() ||
-                       $('span.a-color-price').first().text().trim() ||
-                       $('input[name="items[0.base][customerVisiblePrice][displayString]"]').val() as string || 
-                       $('.a-price.a-text-price .a-offscreen').first().text().trim() ||
-                       $('.apexPriceToPay').text().trim() ||
-                       "N/A";
-      }
-      
-      const variationSelectors = [
-        '#variation_color_name li.swatchAvailable',
-        '#variation_size_name li.swatchAvailable',
-        '#native_dropdown_selected_size_name option',
-        '.a-button-text .selection'
-      ];
-      liveDataRaw.variations = $(variationSelectors.join(', ')).length > 0 ? 1 : 0;
-      
-      // Extract numeric price
-      const priceMatch = priceDisplay.replace(/[^\d,. ]/g, '').match(/(\d+[.,]\d{2})/) || priceDisplay.match(/(\d+)/);
-      liveDataRaw.price = priceMatch ? priceMatch[0].replace(',', '.') : "N/A";
-
-      console.log(`Extracted Amazon Price: ${liveDataRaw.price}`);
-
-      // Perform Audit
-      const auditResults = performAudit(masterData, liveDataRaw, 'amazon', domain);
-      
-      res.json({ liveData: liveDataRaw, auditResults });
+      const auditResults = performAudit(masterData, livedata, 'amazon', domain);
+      res.json({ liveData: livedata, auditResults });
     } catch (error: any) {
       console.error("Amazon Audit Error:", error);
       res.status(500).json({ error: error.message });
@@ -413,567 +157,113 @@ async function startServer() {
 
   // 3. Audit Bol.com
   app.post("/api/audit/bol", async (req, res) => {
-    let browser;
+    let browser: any;
     let retryCount = 0;
-    const maxRetries = 3;
-    
-    const performBolAudit = async () => {
+    const maxRetries = 2;
+
+    const executeAudit = async (): Promise<any> => {
       try {
         const { ean, masterData } = req.body;
         const searchUrl = `https://www.bol.com/nl/nl/s/?searchtext=${ean}`;
         
         console.log(`Starting Bol Audit for EAN: ${ean} (Attempt ${retryCount + 1})`);
         
-        // Antigravity Proxy Configuration for Bol.com
-        // Using NL Residential Proxies to bypass IP block
         const launchOptions: any = { 
           headless: true,
-          args: ['--no-sandbox', '--disable-setuid-sandbox']
+          args: [
+            '--no-sandbox', 
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu'
+          ]
         };
         
-        // Use Antigravity API if available, otherwise fall back to standard proxy
         if (process.env.ANTIGRAVITY_API_KEY) {
-          // Antigravity NL Residential Proxy Configuration
           launchOptions.proxy = {
             server: `http://proxy.antigravityai.com:8080`,
             username: process.env.ANTIGRAVITY_API_KEY,
             password: 'residential-nl'
           };
-          console.log("Using Antigravity NL Residential Proxy for Bol.com");
-        } else if (process.env.PROXY_SERVER) {
-          launchOptions.proxy = {
-            server: process.env.PROXY_SERVER,
-            username: process.env.PROXY_USERNAME,
-            password: process.env.PROXY_PASSWORD
-          };
-          console.log("Using standard proxy for Bol.com");
         }
         
         browser = await chromium.launch(launchOptions);
-        const userAgents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
-      ];
-      const randomUserAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
-      const context = await browser.newContext({
-        userAgent: randomUserAgent,
-        viewport: { width: 1920, height: 1080 },
-        extraHTTPHeaders: {
-          'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-          'Referer': 'https://www.google.com/',
-          'sec-ch-ua': '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
-          'sec-ch-ua-mobile': '?0',
-          'sec-ch-ua-platform': '"Windows"',
-          'User-Agent': randomUserAgent
-        }
-      });
-
-      // Clear cookies between requests to prevent session tracking
-      await context.clearCookies();
-      
-      // Set cookies for language and country
-      await context.addCookies([
-        { name: 'cookie_consent', value: 'true', domain: '.bol.com', path: '/' },
-        { name: 'bol_gdpr_consent', value: 'yes', domain: '.bol.com', path: '/' },
-        { name: 'nl_NL', value: 'true', domain: '.bol.com', path: '/' },
-        { name: 'language', value: 'nl-NL', domain: '.bol.com', path: '/' },
-        { name: 'country', value: 'NL', domain: '.bol.com', path: '/' },
-        { name: 'bol_p_incognito', value: 'true', domain: '.bol.com', path: '/' }
-      ]);
-
-      const page = await context.newPage();
-      await page.addInitScript(() => { Object.defineProperty(navigator, 'webdriver', { get: () => false }); });
-      
-      // [NEW] Human-like Self-Search Strategy
-      console.log(`Bypassing deep-links: Navigating to Bol home page first...`);
-      try {
-        await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'load', timeout: 30000 });
-      } catch (e) {
-        console.warn("Home page load timed out or failed, attempting to proceed to search directly...");
-        await page.goto(searchUrl, { waitUntil: 'load', timeout: 45000 }).catch(() => null);
-      }
-
-      // 1. Handle Cookie Consent Wall (More aggressive)
-      await page.evaluate(() => {
-        const acceptButton = Array.from(document.querySelectorAll('button')).find(b => 
-          b.id.includes('accept') || 
-          b.innerText.toLowerCase().includes('accepteer') || 
-          b.innerText.toLowerCase().includes('accept') ||
-          b.getAttribute('data-test') === 'consent-modal-confirm-btn'
-        );
-        if (acceptButton) (acceptButton as any).click();
-      }).catch(() => null);
-      await page.waitForTimeout(1000);
-
-      // Perform Search if we land on Home Page
-      const currentUrl = page.url();
-      if (currentUrl.endsWith('.com/nl/nl/') || currentUrl.endsWith('.com/') || currentUrl.includes('de-winkel-van-ons-allemaal')) {
-         console.log(`On home page. Performing active search for: ${ean}`);
-         const searchInput = await page.waitForSelector('[data-test="search-input"]', { timeout: 10000 }).catch(() => null);
-         if (searchInput) {
-            await searchInput.type(ean, { delay: 100 });
-            await page.keyboard.press('Enter');
-            await page.waitForTimeout(2000);
-         } else {
-            console.log("Search input not found, navigating to search URL directly...");
-            await page.goto(searchUrl, { waitUntil: 'load', timeout: 30000 }).catch(() => null);
-         }
-      }
-      
-      // 2. Handle Title "bol" or loading states
-      let currentTitle = await page.title();
-      if (currentTitle.toLowerCase() === 'bol' || currentTitle.toLowerCase() === 'bol.com' || currentTitle === '') {
-        console.log("Detected generic 'bol' title, waiting for content/redirect...");
-        await page.waitForTimeout(5000);
-        currentTitle = await page.title();
-      }
-
-      // Check for CAPTCHA or blocking
-      const isBlocked = await page.evaluate(function() {
-        // @ts-ignore
-        if (typeof __name === 'undefined') { (window as any).__name = (t: any, v: any) => t; }
-        const text = document.body.innerText;
-        const title = document.title.toLowerCase();
-        return title.includes('robot') || 
-               title.includes('captcha') ||
-               text.includes('Ben je een robot?') ||
-               text.includes('rustig aan speed racer') ||
-               text.includes('Je gaat iets te snel') ||
-               text.includes('IP adres is geblokkeerd') ||
-               text.includes('IP address is blocked');
-      });
-
-      if (isBlocked) {
-        const title = await page.title();
-        throw new Error(`Bol.com blocked the request or redirect (Title: ${title})`);
-      }
-
-      // Check if we are on a search page or product page
-      let pageTitle = await page.title();
-      console.log(`Page Title after handling: ${pageTitle}`);
-      
-      const isSearchPage = pageTitle.includes('Alle artikelen') || 
-                           pageTitle.includes('Zoekresultaten') || 
-                           await page.evaluate(function() {
-                             // @ts-ignore
-                             if (typeof __name === 'undefined') { (window as any).__name = (t: any, v: any) => t; }
-                             return !!document.querySelector('.product-list, .product-item--grid, [data-test="product-list"]');
-                           });
-      
-      if (isSearchPage) {
-        console.log("Search page detected, looking for product link...");
-        const firstProductSelector = 'a[href*="/p/"]:not([href*="javascript"]), .product-title a, a[data-test="product-title"], .product-item--grid a, .product-list a';
-        const el = await page.waitForSelector(firstProductSelector, { timeout: 10000 }).catch(() => null);
-        const firstProductLink = el ? await el.getAttribute('href') : null;
-        
-        if (firstProductLink) {
-          const productUrl = firstProductLink.startsWith('http') ? firstProductLink : `https://www.bol.com${firstProductLink}`;
-          console.log(`Navigating to product URL: ${productUrl}`);
-          await page.goto(productUrl, { waitUntil: 'load', timeout: 60000 }).catch(() => null);
-        }
-      }
-
-      // 4. Resilient Wait & Scroll Strategy (2026 Update)
-      try {
-        console.log("Waiting for body...");
-        await page.waitForSelector('body', { timeout: 10000 });
-
-        // Humanize: Scroll slightly to trigger lazy-load elements (React hydration)
-        console.log("Triggering scroll for React hydration...");
-        await page.mouse.wheel(0, 500);
-        await page.waitForTimeout(1000); 
-        await page.mouse.wheel(0, -200);
-
-        // Updated Selector Check for 2026 Header (most stable)
-        const headerSelector = '[data-test="title"], h1.page-title, .js_pdp_title, .pdp-header';
-        console.log("Ensuring PDP Header is visible...");
-        await page.waitForSelector(headerSelector, { 
-            state: 'visible', 
-            timeout: 15000 
+        const context = await browser.newContext({
+          userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+          viewport: { width: 1920, height: 1080 }
         });
-      } catch (error: any) {
-        // Diagnostic: Log content on failure to identify Akamai/CAPTCHA
-        const title = await page.title();
-        const html = await page.content();
-        console.error(`Bol.com Timeout Error details. Page Title: ${title}, URL: ${page.url()}`);
-        if (html.includes('akamai') || html.includes('Akamai')) {
-           throw new Error("Bol.com Blocked by Akamai. Try again with a different proxy region.");
-        }
-        throw new Error(`Bol.com Timeout: Could not find product header (Current: ${title}). See logs for HTML diagnostic.`);
-      }
-
-      // Human-like delay after page load (3 seconds) to allow all JS to execute
-      console.log("Waiting 3 seconds for JavaScript execution...");
-      await page.waitForTimeout(3000);
-
-      // Scroll 500px down and back up instantly to trigger lazy loading
-      await page.evaluate(() => {
-        window.scrollBy(0, 500);
-        setTimeout(() => window.scrollBy(0, -500), 100);
-      });
-      await page.waitForTimeout(1000);
-
-      // Wait for description and media containers specifically (critical for JS-rendered content)
-      await page.waitForSelector('#pdp_description, .js_product_description, div.js_product_media_items, .pdp-images, [data-test="product-main-image"]', { timeout: 15000 }).catch(() => null);
-
-      const liveDataRaw = await page.evaluate(function() {
-        // @ts-ignore
-        if (typeof __name === 'undefined') { (window as any).__name = (t: any, v: any) => t; }
+        const page = await context.newPage();
         
-        // 1. Title
-        const elTitle = document.querySelector('[data-test="title"]') || document.querySelector('h1.page-title') || document.querySelector('h1');
-        const title = elTitle ? (elTitle as any).innerText.trim() : "";
-        
-        // 2. Description
-        let description = "";
-        
-        // Prioritize "Productbeschrijving" heading extraction
-        const headings = Array.from(document.querySelectorAll('h2, h3, h4, b, strong, span'));
-        const descHeading = headings.find(h => {
-          const t = (h as any).innerText || (h as any).textContent || "";
-          return t.includes('Productbeschrijving') || t.includes('Product description');
-        });
-        
-        if (descHeading) {
-           const parent = descHeading.closest('section') || descHeading.parentElement;
-           if (parent) {
-              const clone = parent.cloneNode(true) as HTMLElement;
-              const UI_SELECTORS = ['.js_description_read_more', '[data-test="read-more"]', '.pdp-description__read-more', 'button', 'a.button--link'];
-              UI_SELECTORS.forEach(sel => {
-                clone.querySelectorAll(sel).forEach(btn => btn.remove());
-              });
-              const text = (clone as any).innerText || (clone as any).textContent || "";
-              description = text.replace(/Productbeschrijving|Product description/i, '').trim();
-              // Global clean for UI fragments
-              description = description.replace(/toon meer|toon minder/gi, '').trim();
-           }
-        }
+        await page.goto(searchUrl, { waitUntil: 'load', timeout: 60000 });
+        await page.waitForTimeout(2000);
 
-        if (!description || description.length < 50) {
-          const descSelectors = [
-            'div[data-test="description"]',
-            'div.js_product_description',
-            '#pdp_description',
-            'section.product-description',
-            '[data-test="product-description"]',
-            '.js_product_description',
-            '.product-description',
-            '.product-description-content',
-            'div[itemprop="description"]',
-            '#descriptionBlock',
-            'section#description',
-            '.slot-product-description',
-            '.pdp-description',
-            '.manufacturer-info', // Bol A+ equivalent
-            '.product-info',      // Bol A+ equivalent
-            '[data-test="product-info"]'
-          ];
-          
-          // Try to expand "Lees meer" if it exists
-          const readMore = document.querySelector('.js_description_read_more, [data-test="read-more"], .pdp-description__read-more');
-          if (readMore) (readMore as any).click();
-
-          let pooledText = "";
-          for (const s of descSelectors) {
-            const el = document.querySelector(s);
-            if (el) {
-               const clone = el.cloneNode(true) as HTMLElement;
-               const UI_SELECTORS = ['.js_description_read_more', '[data-test="read-more"]', '.pdp-description__read-more', 'button', 'a.button--link'];
-               UI_SELECTORS.forEach(sel => {
-                 clone.querySelectorAll(sel).forEach(btn => btn.remove());
-               });
-               const text = (clone as any).innerText || (clone as any).textContent || "";
-               if (text.trim().length > 20) {
-                  let html = clone.innerHTML;
-                  let t = html.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<\/div>/gi, '\n').replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim();
-                  // Secondary cleanup for text fragments
-                  t = t.replace(/toon meer|toon minder/gi, '').trim();
-                  
-                  if (!pooledText.includes(t)) {
-                    pooledText += (pooledText ? "\n\n" : "") + t;
-                  }
-               }
+        // Check if on search page or product page
+        const isSearchPage = await page.evaluate(() => !!document.querySelector('.product-list, [data-test="product-list"]'));
+        if (isSearchPage) {
+          const link = await page.waitForSelector('a[href*="/p/"]', { timeout: 10000 }).catch(() => null);
+          if (link) {
+            const href = await link.getAttribute('href');
+            if (href) {
+                await page.goto(href.startsWith('http') ? href : `https://www.bol.com${href}`, { waitUntil: 'load' });
             }
           }
-          if (pooledText) description = pooledText;
         }
 
-        // 3. Price (Prioritize data-test for 2026)
-        let price = "N/A";
-        const promoEl = document.querySelector('[data-test="price"]') || 
-                        document.querySelector('.promo-price') || 
-                        document.querySelector('#buyBlockSlot [class*="text-promo-text-high"]') || 
-                        document.querySelector('.buy-block__price');
-        if (promoEl) {
-           price = (promoEl as any).innerText.replace(/\s+/g, '').replace('ظéش', '').trim().replace(',', '.');
-           // Ensure it's a valid price format
-           if (!/^\d+\.\d+$/.test(price) && price.includes('.')) {
-              // already okay
-           } else if (/^\d+$/.test(price)) {
-              // missing cents? Bol usually has ,- for round numbers
-           }
-        } else {
-          const buyBlock = document.querySelector('#buyBlockSlot') || document.querySelector('.buy-block') || document.querySelector('[data-test="buy-block"]');
-          if (buyBlock) {
-             const text = (buyBlock as any).innerText;
-             const match = text.match(/(\d+),(\d{2})/) || text.match(/(\d+),-/);
-             if (match) price = match[2] ? `${match[1]}.${match[2]}` : `${match[1]}.00`;
-          }
-          if (price === "N/A") {
-            const meta = document.querySelector('meta[property="product:price:amount"]') || document.querySelector('meta[itemprop="price"]');
-            if (meta) price = meta.getAttribute('content') || "N/A";
-          }
-        }
+        await page.waitForTimeout(3000);
+        // Scroll to trigger hydration
+        await page.evaluate(() => window.scrollBy(0, 500));
+        await page.waitForTimeout(1000);
 
-        // 4. Shipping
-        let shippingText = "N/A";
-        // Look for "Uiterlijk [Date] in huis" or "Morgen in huis"
-        const deliveryPromise = document.querySelector('[data-test="delivery-highlight"]') || 
-                                document.querySelector('[data-test="delivery-promise"]') ||
-                                document.querySelector('.js_delivery_info') || 
-                                document.querySelector('.ui-delivery-info') || 
-                                document.querySelector('.delivery-promise') || 
-                                document.querySelector('.delivery-delivery-time') || 
-                                document.querySelector('.buy-block__delivery-text');
-                                
-        if (deliveryPromise) {
-          shippingText = (deliveryPromise as any).innerText.trim();
-        } else {
-          const bodyText = document.body.innerText;
-          const uiterlijkMatch = bodyText.match(/Uiterlijk\s+(.+?)\s+in\s+huis/i);
-          if (uiterlijkMatch) shippingText = uiterlijkMatch[0];
-        }
+        const liveDataRaw = await page.evaluate(() => {
+          const title = (document.querySelector('[data-test="title"]') as any)?.innerText.trim() || document.title;
+          const priceStr = (document.querySelector('[data-test="price"]') as any)?.innerText.replace(/\s+/g, '') || "N/A";
+          const priceMatch = priceStr.match(/(\d+),(\d{2})/) || priceStr.match(/(\d+)/);
+          const price = priceMatch ? (priceMatch[2] ? `${priceMatch[1]}.${priceMatch[2]}` : `${priceMatch[1]}.00`) : "N/A";
 
-        // 5. Images (Revised extraction to avoid empty results)
-        let images: string[] = [];
-        
-        // Strategy 1: Preload tags (Often has high-res URLs)
-        try {
-          const preloads = Array.from(document.querySelectorAll('link[rel="preload"][as="image"]'));
-          preloads.forEach(link => {
-            const href = link.getAttribute('href');
-            if (href && href.includes('media.s-bol.com')) images.push(href);
+          const images: string[] = [];
+          document.querySelectorAll('img[src*="media.s-bol.com"]').forEach(img => {
+            const src = (img as any).src;
+            if (src && !images.includes(src)) images.push(src);
           });
-        } catch(e) {}
 
-        // Strategy 2: Main image selectors
-        const mainSelectors = [
-          '[data-test="product-main-image"] img',
-          '.js_main_product_image',
-          '.pdp-main-image img',
-          'img.js_main_product_image'
-        ];
-        for(const s of mainSelectors) {
-          const img = document.querySelector(s);
-          if (img) {
-            const src = (img as any).src || img.getAttribute('src');
-            if (src && src.startsWith('http')) images.push(src);
-          }
-        }
-        
-        // Strategy 3: Thumbnails
-        const thumbSelectors = [
-          '.js_product_media_items img',
-          '.pdp-images img',
-          '.js_image_container img',
-          '.product-images__item img'
-        ];
-        for(const s of thumbSelectors) {
-          const thumbs = Array.from(document.querySelectorAll(s));
-          thumbs.forEach(img => {
-            const src = (img as any).src || img.getAttribute('data-src') || img.getAttribute('src');
-            if (src && src.includes('media.s-bol.com')) {
-              images.push(src);
-            }
-          });
-        }
-        
-        // 6. Variations & A+
-        const hasVariations = !!(
-          document.querySelector('.js_attribute_selector .js_attribute_label') ||
-          document.querySelector('.js_attribute_selector .active') ||
-          document.querySelector('.js_attribute_selector [selected]') ||
-          document.querySelector('.js_attribute_selector') ||
-          document.querySelector('[data-test="variant-selector"]') || 
-          document.querySelector('.variant-selector') || 
-          document.querySelector('.js_bundle_as_variant_selector') ||
-          document.querySelector('[data-test="variant-dropdown"]') ||
-          document.querySelector('.js_variant_selector') ||
-          document.querySelector('[data-test="variant-list"]') ||
-          document.querySelector('.pdp-variant-selector') ||
-          document.querySelector('.js_variant_dropdown') ||
-          // Check for label or option elements inside attribute selector
-          Array.from(document.querySelectorAll('.js_attribute_selector label, .js_attribute_selector option')).length > 1 ||
-          // Broad pattern matching for variation themes
-          Array.from(document.querySelectorAll('span, div, h3, label')).some(el => {
-            const t = (el as any).innerText || "";
-            const themes = [
-              'Kies je kleur', 
-              'Kies je maat', 
-              'Kies je variant', 
-              'Kies je bestanddeel', 
-              'Kies je model',
-              'Kies je type',
-              'Kies je uitvoering',
-              'Kies je breedte',
-              'Kies je lengte',
-              'Kies je inhoud',
-              'Kies je gewicht',
-              'Kies je verpakking',
-              'Kies je aantal',
-              'Kies je materiaal',
-              'Kies je geur',
-              'Kies je smaak',
-              'Kies je stijl',
-              'Kies je set',
-              'Kies je platform'
-            ];
-            return themes.some(theme => t.includes(theme));
-          })
-        );
-        
-        const hasAPlus = !!(
-          Array.from(document.querySelectorAll('.js_product_description img, .product-description img, .product-description-content img, [data-test="product-info"] img, .js_product_info img, .manufacturer-info img, .product-info img'))
-            .some(img => {
-              const parent = img.closest('section, div');
-              if (parent) {
-                const text = (parent as any).innerText || "";
-                if (text.includes('Over het merk') || text.includes('Brand Story')) return false;
-              }
-              return true;
-            })
-        );
+          const description = (document.querySelector('[data-test="description"]') as any)?.innerText.trim() || "";
+          const bullets = Array.from(document.querySelectorAll('[data-test="product-features"] li')).map(li => (li as any).innerText.trim());
 
-        // 6. Bullet Points / Kenmerken for Bol
-        let bullets: string[] = [];
-        const featureSelectors = [
-          '[data-test="product-features"] li',
-          '.product-features li',
-          '.js_product_features li',
-          '.specs-list__item',
-          '.product-specifications li'
-        ];
-        
-        const extractedSet = new Set<string>();
-        for (const s of featureSelectors) {
-          const items = document.querySelectorAll(s);
-          if (items.length > 0) {
-            Array.from(items).forEach(li => {
-              const t = (li as any).innerText.trim();
-              if (t.length > 3) extractedSet.add(t);
-            });
-          }
-        }
-        bullets = Array.from(extractedSet);
+          return {
+            title,
+            price,
+            images,
+            description,
+            bullets,
+            variations: document.querySelectorAll('.js_attribute_selector').length > 0 ? 1 : 0,
+            hasAPlus: document.querySelectorAll('.js_product_description img').length > 0 ? 1 : 0,
+            shipping: (document.querySelector('[data-test="delivery-highlight"]') as any)?.innerText.trim() || "N/A"
+          };
+        });
 
-        return {
-          title,
-          description,
-          price,
-          shipping: shippingText,
-          images,
-          bullets,
-          variations: hasVariations ? 1 : 0,
-          hasAPlus: hasAPlus ? 1 : 0
+        const livedata = {
+          ...liveDataRaw,
+          images: getUniqueImages(liveDataRaw.images)
         };
-      });
 
-      console.log(`Extracted Title: ${liveDataRaw.title}`);
-      console.log(`Extracted Price: ${liveDataRaw.price}`);
-      console.log(`Has Variations: ${liveDataRaw.variations}`);
-      console.log(`Has A+ Content: ${liveDataRaw.hasAPlus}`);
-      console.log(`Description Length: ${liveDataRaw.description.length}`);
-      console.log(`Images Found: ${liveDataRaw.images?.length || 0}`);
+        const auditResult = performAudit(masterData, livedata, 'bol');
+        res.json({ liveData: livedata, auditResult });
 
-      // Parse shipping days
-      let shippingDaysStr = "N/A";
-      let shippingDaysNum = 0;
-      if (liveDataRaw.shipping && liveDataRaw.shipping !== "N/A") {
-        try {
-          const s = liveDataRaw.shipping.toLowerCase();
-          const today = new Date();
-          const currentYear = today.getFullYear();
-          today.setHours(0, 0, 0, 0);
-
-          if (s.includes('vandaag') || s.includes('today')) {
-            shippingDaysNum = 0;
-            shippingDaysStr = "0 Days";
-          } else if (s.includes('morgen') || s.includes('tomorrow')) {
-            shippingDaysNum = 1;
-            shippingDaysStr = "1 Day";
-          } else {
-            const nlMonthMap: Record<string, number> = {
-              'januari': 0, 'februari': 1, 'maart': 2, 'april': 3, 'mei': 4, 'juni': 5,
-              'juli': 6, 'augustus': 7, 'september': 8, 'oktober': 9, 'november': 10, 'december': 11
-            };
-            
-            const dayMatch = s.match(/\d+/);
-            const monthMatch = s.match(/[a-z]+/g) || [];
-            
-            let targetDate: Date | null = null;
-            if (dayMatch) {
-              const day = parseInt(dayMatch[0]);
-              let monthIndex = -1;
-              for (const monthName of monthMatch) {
-                if (nlMonthMap[monthName] !== undefined) {
-                  monthIndex = nlMonthMap[monthName];
-                  break;
-                }
-              }
-              if (monthIndex !== -1) {
-                targetDate = new Date(currentYear, monthIndex, day);
-              }
-            }
-            
-            if (targetDate) {
-              targetDate.setHours(0, 0, 0, 0);
-              const todayClean = new Date();
-              todayClean.setHours(0, 0, 0, 0);
-              const diff = differenceInDays(targetDate, todayClean);
-              shippingDaysNum = diff >= 0 ? diff : 0;
-              shippingDaysStr = `${shippingDaysNum} Day${shippingDaysNum === 1 ? '' : 's'}`;
-            }
-          }
-        } catch (e) {}
-      }
-
-      const liveData = {
-        title: liveDataRaw.title,
-        description: liveDataRaw.description || "No description on detail page",
-        bullets: liveDataRaw.bullets || [],
-        price: liveDataRaw.price,
-        shipping: shippingDaysStr,
-        rawShipping: liveDataRaw.shipping || "N/A",
-        variations: liveDataRaw.variations,
-        hasAPlus: liveDataRaw.hasAPlus,
-        images: liveDataRaw.images && liveDataRaw.images.length > 0 ? getUniqueImages(liveDataRaw.images) : []
-      };
-
-      const auditResult = performAudit(masterData, liveData, 'bol');
-      res.json({ liveData, auditResult });
       } catch (error: any) {
-        // Handle IP block with retry logic
-        if (error.message === "IP_BLOCKED" && retryCount < maxRetries) {
-          retryCount++;
-          console.log(`IP blocked detected. Retrying with new proxy (Attempt ${retryCount}/${maxRetries})...`);
-          if (browser) await browser.close();
-          return performBolAudit(); // Retry with new proxy rotation
+        if (retryCount < maxRetries) {
+            retryCount++;
+            console.log(`Bol Audit Retrying... ${retryCount}`);
+            if (browser) await browser.close();
+            return executeAudit();
         }
         throw error;
       }
     };
-    
+
     try {
-      await performBolAudit();
+      await executeAudit();
     } catch (error: any) {
-      console.error("Bol Audit Error:", error);
-      res.status(500).json({ 
-        error: error.message || "An unexpected error occurred during Bol.com audit",
-        details: error.stack,
-        name: error.name
-      });
+      console.error("Bol Audit Fatal Error:", error);
+      res.status(500).json({ error: error.message });
     } finally {
       if (browser) await browser.close();
     }
