@@ -166,19 +166,18 @@ export default function App() {
     csvRows.push(headers.join(','));
 
     Object.entries(auditResults).forEach(([idx, res]: any) => {
-      const row = data[parseInt(idx)] || {};
-      const id = mode === 'amazon' ? (row.ASIN || 'N/A') : (row.EAN || 'N/A');
-      const bullets = res.auditResult?.bullets || [];
-      const bulletMatch = bullets.length > 0 ? bullets.filter((b: any) => b.match).length / bullets.length : 0;
+      const row = data[parseInt(idx)];
+      const id = mode === 'amazon' ? row.ASIN : row.EAN;
+      const bulletMatch = res.auditResult.bullets.filter((b: any) => b.match).length / (res.auditResult.bullets.length || 1);
       
       const line = [
         parseInt(idx) + 1,
         id,
-        res.auditResult?.title?.match ? 'YES' : 'NO',
-        res.auditResult?.description?.match ? 'YES' : 'NO',
+        res.auditResult.title.match ? 'YES' : 'NO',
+        res.auditResult.description.match ? 'YES' : 'NO',
         Math.round(bulletMatch * 100) + '%',
-        res.auditResult?.price?.live || 'N/A',
-        res.auditResult?.shipping?.live || 'N/A'
+        res.auditResult.price.live,
+        res.auditResult.shipping.live
       ];
       csvRows.push(line.join(','));
     });
@@ -459,12 +458,12 @@ export default function App() {
                     <React.Fragment key={idx}>
                       <tr className={`hover:bg-slate-50 transition-colors ${selectedRow === idx ? 'bg-indigo-50/30' : ''}`}>
                         <td className="px-6 py-4">
-                          <div className="font-medium text-slate-900 truncate max-w-xs">{row.Title || 'No Title'}</div>
+                          <div className="font-medium text-slate-900 truncate max-w-xs">{row.Title}</div>
                           <div className="flex items-center gap-2 mt-0.5">
-                            <span className="text-xs text-slate-500">Master: {row.Price || 'N/A'}</span>
+                            <span className="text-xs text-slate-500">Master: {row.Price}</span>
                             {auditResults[idx] && (
-                              <span className={`text-xs font-bold ${auditResults[idx]?.auditResult?.price?.match ? 'text-green-600' : 'text-red-600'}`}>
-                                Live: {auditResults[idx]?.liveData?.price || 'N/A'}
+                              <span className={`text-xs font-bold ${auditResults[idx].auditResult.price.match ? 'text-green-600' : 'text-red-600'}`}>
+                                Live: {auditResults[idx].liveData.price || 'N/A'}
                               </span>
                             )}
                           </div>
@@ -480,38 +479,38 @@ export default function App() {
                             </div>
                           ) : auditResults[idx] ? (
                             <div className="flex flex-col items-center gap-2">
-                              {mode === 'bol' && auditResults[idx]?.liveData?.images && auditResults[idx]?.liveData?.images?.length > 0 && (
+                              {mode === 'bol' && auditResults[idx].liveData.images && auditResults[idx].liveData.images.length > 0 && (
                                 <div className="flex items-center justify-center gap-1 overflow-x-auto max-w-[180px] pb-1 scrollbar-hide">
-                                  {auditResults[idx]?.liveData?.images?.slice(0, 5).map((img: string, i: number) => (
+                                  {auditResults[idx].liveData.images.slice(0, 5).map((img: string, i: number) => (
                                     <div key={i} className="relative group">
                                       <img 
                                         src={getProxiedUrl(img)} 
-                                        className={`w-10 h-10 min-w-[40px] object-contain bg-white rounded border ${i === 0 && !auditResults[idx]?.auditResult?.images?.match ? 'border-red-500 ring-1 ring-red-500' : 'border-slate-200'}`} 
+                                        className={`w-10 h-10 min-w-[40px] object-contain bg-white rounded border ${i === 0 && !auditResults[idx].auditResult.images.match ? 'border-red-500 ring-1 ring-red-500' : 'border-slate-200'}`} 
                                         alt=""
                                         referrerPolicy="no-referrer"
                                       />
-                                      {i === 0 && auditResults[idx]?.auditResult?.images && !auditResults[idx]?.auditResult?.images?.match && (
+                                      {i === 0 && !auditResults[idx].auditResult.images.match && (
                                         <div className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5 shadow-sm">
                                           <X className="w-2 h-2" />
                                         </div>
                                       )}
                                     </div>
                                   ))}
-                                  {(auditResults[idx]?.liveData?.images?.length || 0) > 5 && (
+                                  {auditResults[idx].liveData.images.length > 5 && (
                                     <button 
                                       onClick={() => setGalleryModal({ 
-                                        images: auditResults[idx]?.liveData?.images || [], 
-                                        title: auditResults[idx]?.liveData?.title || (mode === 'amazon' ? (row.ASIN || 'N/A') : (row.EAN || 'N/A'))
+                                        images: auditResults[idx].liveData.images, 
+                                        title: auditResults[idx].liveData.title 
                                       })}
                                       className="w-10 h-10 min-w-[40px] flex items-center justify-center bg-slate-100 rounded border border-slate-200 text-[10px] font-bold text-slate-500 hover:bg-indigo-50 hover:text-indigo-600 transition-colors"
                                     >
-                                      +{(auditResults[idx]?.liveData?.images?.length || 0) - 5}
+                                      +{auditResults[idx].liveData.images.length - 5}
                                     </button>
                                   )}
                                 </div>
                               )}
                               <div className="flex items-center justify-center gap-1">
-                                {Object.values(auditResults[idx]?.auditResult || {}).every((v: any) => !v || v.match || (v.similarity && v.similarity > 0.9)) ? (
+                                {Object.values(auditResults[idx].auditResult).every((v: any) => v.match || (v.similarity && v.similarity > 0.9)) ? (
                                   <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
                                     <CheckCircle2 className="w-3 h-3" /> Pass
                                   </span>
@@ -618,16 +617,16 @@ export default function App() {
                                     <div className="grid grid-cols-2 gap-4">
                                       <div className="p-4 bg-white rounded-xl border border-slate-200">
                                         <div className="text-xs text-slate-400 mb-1">Price</div>
-                                        <div className="text-lg font-bold text-indigo-600">{auditResults[idx].liveData?.price || 'N/A'}</div>
-                                        {auditResults[idx].liveData?.listPrice && auditResults[idx].liveData?.listPrice !== 'N/A' && (
-                                          <div className="text-[10px] text-slate-400 line-through">List: {auditResults[idx].liveData?.listPrice}</div>
+                                        <div className="text-lg font-bold text-indigo-600">{auditResults[idx].liveData.price || 'N/A'}</div>
+                                        {auditResults[idx].liveData.listPrice && auditResults[idx].liveData.listPrice !== 'N/A' && (
+                                          <div className="text-[10px] text-slate-400 line-through">List: {auditResults[idx].liveData.listPrice}</div>
                                         )}
                                       </div>
                                       <div className="p-4 bg-white rounded-xl border border-slate-200">
                                         <div className="text-xs text-slate-400 mb-1">Shipping</div>
-                                        <div className="text-sm font-bold text-indigo-600">{auditResults[idx].liveData?.shipping || 'N/A'}</div>
-                                        <div className="text-[10px] text-slate-400 mt-1 truncate" title={auditResults[idx].liveData?.rawShipping}>
-                                          Live: {auditResults[idx].liveData?.rawShipping || 'N/A'}
+                                        <div className="text-sm font-bold text-indigo-600">{auditResults[idx].liveData.shipping || 'N/A'}</div>
+                                        <div className="text-[10px] text-slate-400 mt-1 truncate" title={auditResults[idx].liveData.rawShipping}>
+                                          Live: {auditResults[idx].liveData.rawShipping || 'N/A'}
                                         </div>
                                       </div>
                                     </div>
@@ -636,16 +635,16 @@ export default function App() {
                                       <div className="p-4 bg-white rounded-xl border border-slate-200">
                                         <div className="text-xs text-slate-400 mb-1">Variations</div>
                                         <div className="flex items-center gap-2">
-                                          <span className={`text-sm font-bold ${auditResults[idx].liveData?.variations > 0 ? 'text-green-600' : 'text-slate-400'}`}>
-                                            {auditResults[idx].liveData?.variations > 0 ? 'YES' : 'NO'}
+                                          <span className={`text-sm font-bold ${auditResults[idx].liveData.variations > 0 ? 'text-green-600' : 'text-slate-400'}`}>
+                                            {auditResults[idx].liveData.variations > 0 ? 'YES' : 'NO'}
                                           </span>
-                                          <span className="text-xs text-slate-400">({auditResults[idx].liveData?.variations || 0} found)</span>
+                                          <span className="text-xs text-slate-400">({auditResults[idx].liveData.variations} found)</span>
                                         </div>
                                       </div>
                                       <div className="p-4 bg-white rounded-xl border border-slate-200">
                                         <div className="text-xs text-slate-400 mb-1">A+ Content</div>
-                                        <div className={`text-sm font-bold ${auditResults[idx].liveData?.hasAPlus ? 'text-green-600' : 'text-slate-400'}`}>
-                                          {auditResults[idx].liveData?.hasAPlus ? 'PRESENT' : 'MISSING'}
+                                        <div className={`text-sm font-bold ${auditResults[idx].liveData.hasAPlus ? 'text-green-600' : 'text-slate-400'}`}>
+                                          {auditResults[idx].liveData.hasAPlus ? 'PRESENT' : 'MISSING'}
                                         </div>
                                       </div>
                                     </div>
@@ -660,10 +659,10 @@ export default function App() {
                                           <div className="bg-white p-4 rounded-xl border border-slate-200">
                                             <div className="text-[10px] font-bold text-slate-400 uppercase mb-3 flex items-center justify-between">
                                               <span>Master Images</span>
-                                              <span className="bg-slate-100 px-2 py-0.5 rounded text-slate-500">{(auditResults[idx]?.auditResult?.images?.master?.length) || 0}</span>
+                                              <span className="bg-slate-100 px-2 py-0.5 rounded text-slate-500">{auditResults[idx].auditResult.images.master.length}</span>
                                             </div>
                                             <div className="grid grid-cols-3 gap-2">
-                                              {(auditResults[idx]?.auditResult?.images?.master || []).slice(0, 6).map((img: string, i: number) => (
+                                              {auditResults[idx].auditResult.images.master.slice(0, 6).map((img: string, i: number) => (
                                                 <div key={i} className="aspect-square bg-slate-50 border border-slate-100 rounded-lg overflow-hidden relative group">
                                                   <img 
                                                     src={getProxiedUrl(img)} 
@@ -681,7 +680,7 @@ export default function App() {
                                                   </div>
                                                 </div>
                                               ))}
-                                              {(!auditResults[idx]?.auditResult?.images?.master || auditResults[idx]?.auditResult?.images?.master?.length === 0) && (
+                                              {auditResults[idx].auditResult.images.master.length === 0 && (
                                                 <div className="col-span-3 text-[10px] text-slate-400 italic py-4 text-center">No master images</div>
                                               )}
                                             </div>
@@ -693,28 +692,28 @@ export default function App() {
                                               <span>Live Marketplace Images</span>
                                               <button 
                                                 onClick={() => setGalleryModal({ 
-                                                  images: auditResults[idx]?.liveData?.images || [], 
-                                                  title: auditResults[idx]?.liveData?.title || "Gallery"
+                                                  images: auditResults[idx].liveData.images, 
+                                                  title: auditResults[idx].liveData.title 
                                                 })}
                                                 className="text-indigo-600 hover:underline flex items-center gap-1"
                                               >
-                                                View Gallery ({(auditResults[idx]?.liveData?.images?.length) || 0})
+                                                View Gallery ({auditResults[idx].liveData.images?.length || 0})
                                               </button>
                                             </div>
                                             
                                             {/* Main Image Highlight */}
-                                            {auditResults[idx]?.liveData?.images && auditResults[idx]?.liveData?.images?.length > 0 && (
+                                            {auditResults[idx].liveData.images && auditResults[idx].liveData.images.length > 0 && (
                                               <div className="mb-4 aspect-square bg-slate-50 border border-slate-200 rounded-xl overflow-hidden relative group">
                                                 <div className="absolute top-2 left-2 z-10 bg-indigo-600 text-white text-[9px] font-bold px-2 py-0.5 rounded shadow-sm uppercase">Main View</div>
                                                 <img 
-                                                  src={getProxiedUrl(auditResults[idx]?.liveData?.images[0])} 
+                                                  src={getProxiedUrl(auditResults[idx].liveData.images[0])} 
                                                   alt="Main Product" 
                                                   className="w-full h-full object-contain transition-transform group-hover:scale-105" 
                                                   referrerPolicy="no-referrer" 
                                                 />
                                                 <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                                                   <button 
-                                                    onClick={() => window.open(auditResults[idx]?.liveData?.images[0], '_blank')}
+                                                    onClick={() => window.open(auditResults[idx].liveData.images[0], '_blank')}
                                                     className="p-2 bg-white rounded-full text-slate-700 shadow-lg"
                                                   >
                                                     <ExternalLink className="w-4 h-4" />
@@ -722,15 +721,10 @@ export default function App() {
                                                 </div>
                                               </div>
                                             )}
-                                            {(!auditResults[idx]?.liveData?.images || auditResults[idx]?.liveData?.images?.length === 0) && (
-                                               <div className="mb-4 aspect-square bg-slate-50 border border-slate-200 rounded-xl overflow-hidden flex items-center justify-center">
-                                                  <ImageIcon className="w-12 h-12 text-slate-200" />
-                                               </div>
-                                            )}
 
                                             <div className="text-[10px] font-bold text-slate-400 uppercase mb-2">Gallery View</div>
                                             <div className="grid grid-cols-4 gap-2">
-                                              {(auditResults[idx]?.liveData?.images || []).slice(1, 9).map((img: string, i: number) => (
+                                              {auditResults[idx].liveData.images?.slice(1, 9).map((img: string, i: number) => (
                                                 <div key={i} className="aspect-square bg-slate-50 border border-slate-100 rounded-lg overflow-hidden relative group">
                                                   <img 
                                                     src={getProxiedUrl(img)} 
@@ -748,7 +742,7 @@ export default function App() {
                                                   </div>
                                                 </div>
                                               ))}
-                                              {(!auditResults[idx]?.liveData?.images || auditResults[idx]?.liveData?.images?.length <= 1) && (
+                                              {(!auditResults[idx].liveData.images || auditResults[idx].liveData.images.length <= 1) && (
                                                 <div className="col-span-4 text-[10px] text-slate-400 italic py-4 text-center">No secondary images</div>
                                               )}
                                             </div>
@@ -889,12 +883,10 @@ export default function App() {
 }
 
 function HighlightDiff({ master, live }: { master: string, live: string }) {
-  const mStr = String(master || '');
-  const lStr = String(live || '');
-  if (!lStr) return <span className="italic text-slate-300">Not Found</span>;
+  if (!live) return <span className="italic text-slate-300">Not Found</span>;
   
-  const masterWords = mStr.toLowerCase().split(/\s+/).map(w => w.replace(/[™©®•●▪◦‣■□▢▣▤▥▦▧▨▩▪▫▬▭▮▯▰▱▲△▴▵▶▷▸▹▼▽▾▿◀◁◂◃]/g, '').trim()).filter(Boolean);
-  const liveWords = lStr.split(/\s+/);
+  const masterWords = (master || '').toLowerCase().split(/\s+/).map(w => w.replace(/[™©®•●▪◦‣■□▢▣▤▥▦▧▨▩▪▫▬▭▮▯▰▱▲△▴▵▶▷▸▹▼▽▾▿◀◁◂◃]/g, '').trim()).filter(Boolean);
+  const liveWords = live.split(/\s+/);
   
   return (
     <>
@@ -913,23 +905,20 @@ function HighlightDiff({ master, live }: { master: string, live: string }) {
 
 function ComparisonItem({ label, master, live, similarity, status, isLongText = false, mini = false }: any) {
   const [expanded, setExpanded] = useState(false);
-  const mStr = String(master || '');
-  const lStr = String(live || '');
-  
-  const isImage = lStr && lStr.startsWith('IMAGE:');
-  const isAPlusImages = lStr && lStr.startsWith('APLUS_IMAGES:');
-  const isAPlusData = lStr && lStr.startsWith('APLUS_DATA:');
+  const isImage = live && live.startsWith('IMAGE:');
+  const isAPlusImages = live && live.startsWith('APLUS_IMAGES:');
+  const isAPlusData = live && live.startsWith('APLUS_DATA:');
   
   let imageUrls: string[] = [];
   let aPlusText = '';
 
   if (isImage) {
-    imageUrls = [lStr.replace('IMAGE:', '')];
+    imageUrls = [live.replace('IMAGE:', '')];
   } else if (isAPlusImages) {
-    imageUrls = lStr.replace('APLUS_IMAGES:', '').split(',');
+    imageUrls = live.replace('APLUS_IMAGES:', '').split(',');
   } else if (isAPlusData) {
     try {
-      const data = JSON.parse(lStr.replace('APLUS_DATA:', ''));
+      const data = JSON.parse(live.replace('APLUS_DATA:', ''));
       imageUrls = data.images || [];
       aPlusText = data.text || '';
     } catch (e) {}
