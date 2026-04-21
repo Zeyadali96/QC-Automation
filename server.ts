@@ -20,6 +20,13 @@ async function startServer() {
   const app = express();
   const PORT = process.env.PORT || 3000;
 
+  // Make core helpers available globally for access inside nested routes after esbuild minification
+  (globalThis as any).getUniqueImages = getUniqueImages;
+  (globalThis as any).performAudit = performAudit;
+  (globalThis as any).cleanText = cleanText;
+  (globalThis as any).getImageHash = getImageHash;
+  (globalThis as any).compareHashes = compareHashes;
+
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
 
@@ -103,49 +110,89 @@ async function startServer() {
       await page.goto(url, { waitUntil: 'load', timeout: 60000 });
       await page.waitForTimeout(3000);
 
-      const content = await page.content();
-      const $ = cheerio.load(content);
-      
-      const imagesList: string[] = [];
-      $('#landingImage, #imgTagWrapperId img, .a-dynamic-image, #main-image, .imgTagWrapper img').each((_, el) => {
-        const src = $(el).attr('data-old-hires') || $(el).attr('src') || $(el).attr('data-a-dynamic-image');
-        if (src) {
-          if (src.startsWith('{')) {
-             try { imagesList.push(Object.keys(JSON.parse(src))[0]); } catch(e){}
-          } else {
-             imagesList.push(src);
+      const livedata = await page.evaluate(() => {
+        const getT = (s: string) => (document.querySelector(s) as any)?.innerText.trim() || "";
+        
+        // Price Extraction
+        const priceSelectors = [
+          '#price_inside_buybox',
+          '#corePrice_feature_div .a-offscreen',
+          '#priceblock_ourprice',
+          '.a-price span.a-offscreen',
+          '#managed-price-asin',
+          '#kindle-price',
+          '#priceblock_dealprice'
+        ];
+        let priceText = "";
+        for (const s of priceSelectors) {
+          const t = getT(s);
+          if (t) { priceText = t; break; }
+        }
+        
+        // Clean price: handle 10,99 (EU) and 10.99 (US/UK)
+        let price = "N/A";
+        if (priceText) {
+          const match = priceText.match(/(\d+[,.]\d{2})/) || priceText.match(/(\d+)/);
+          if (match) {
+            price = match[0].replace(',', '.');
           }
         }
+
+        // Shipping Extraction
+        const shipSelectors = [
+          '#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_ID',
+          '#deliveryBlockMessage',
+          '#corePrice_feature_div + div span[data-csa-c-type="element"]',
+          '#shippingMessage',
+          '#upsell-messaging',
+          '.a-spacing-base .a-text-bold',
+          '.mir-delivery-message-text'
+        ];
+        let shipping = "N/A";
+        for (const s of shipSelectors) {
+          const t = getT(s);
+          if (t && t.length > 5) { shipping = t; break; }
+        }
+
+        // Images
+        const images: string[] = [];
+        const imgElements = document.querySelectorAll('#landingImage, #imgTagWrapperId img, .a-dynamic-image, #main-image, .imgTagWrapper img');
+        imgElements.forEach(el => {
+          const src = el.getAttribute('data-old-hires') || el.getAttribute('src') || el.getAttribute('data-a-dynamic-image');
+          if (src) {
+            if (src.startsWith('{')) {
+              try { images.push(Object.keys(JSON.parse(src))[0]); } catch(e){}
+            } else {
+              images.push(src);
+            }
+          }
+        });
+
+        // Bullets
+        const bullets: string[] = [];
+        document.querySelectorAll('#feature-bullets ul li span').forEach(el => {
+          const t = (el as any).innerText.trim();
+          if (t && t.length > 5 && !t.includes('fits')) bullets.push(t);
+        });
+
+        const hasAPlus = !!document.querySelector('.aplus-v2, #aplus, #premium-aplus');
+
+        return {
+          title: getT('#productTitle'),
+          images,
+          bullets,
+          description: getT('#productDescription') || (hasAPlus ? "A+ Content Present" : "No description"),
+          hasAPlus,
+          variations: !!document.querySelector('#twister'),
+          shipping,
+          price
+        };
       });
 
-      const bulletsList: string[] = [];
-      $('#feature-bullets ul li span').each((_, el) => {
-        const t = $(el).text().trim();
-        if (t && t.length > 5 && !t.includes('fits')) bulletsList.push(t);
-      });
+      // Cleanup images in server-side helper
+      livedata.images = (globalThis as any).getUniqueImages(livedata.images);
 
-      const hasAPlus = $('.aplus-v2, #aplus, #premium-aplus').length > 0;
-      
-      const livedata = {
-        title: $('#productTitle').text().trim(),
-        images: getUniqueImages(imagesList),
-        bullets: bulletsList,
-        description: $('#productDescription').text().trim() || (hasAPlus ? "A+ Content Present" : "No description"),
-        hasAPlus: hasAPlus,
-        variations: $('#twister').length > 0 ? 1 : 0,
-        shipping: "N/A",
-        price: "N/A"
-      };
-
-      const priceText = $('#price_inside_buybox, .a-price span.a-offscreen, #priceblock_ourprice, #corePrice_feature_div .a-offscreen').first().text().trim();
-      const priceMatch = priceText.replace(/[^\d,. ]/g, '').match(/(\d+[.,]\d{2})/) || priceText.match(/(\d+)/);
-      livedata.price = priceMatch ? priceMatch[0].replace(',', '.') : "N/A";
-
-      // Shipping
-      const shippingText = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_ID, #deliveryBlockMessage, #delivery-message').first().text().trim();
-      livedata.shipping = shippingText || "N/A";
-
-      const auditResult = performAudit(masterData, livedata, 'amazon', domain);
+      const auditResult = (globalThis as any).performAudit(masterData, livedata, 'amazon', domain);
       res.json({ liveData: livedata, auditResult });
     } catch (error: any) {
       console.error("Amazon Audit Error:", error);
@@ -198,17 +245,17 @@ async function startServer() {
       await page.waitForTimeout(1000);
       
       // Click consent if present
-      await page.evaluate(() => {
+      await page.evaluate(`() => {
         const btn = Array.from(document.querySelectorAll('button')).find(b => b.innerText.toLowerCase().includes('accepteer') || b.id.includes('accept'));
-        if (btn) (btn as any).click();
-      }).catch(() => null);
+        if (btn) btn.click();
+      }`).catch(() => null);
       
       // Search
       await page.goto(searchUrl, { waitUntil: 'load', timeout: 60000 });
       await page.waitForTimeout(2000);
 
       // Check if on search page or product page
-      const isSearchPage = await page.evaluate(() => !!document.querySelector('.product-list, [data-test="product-list"]'));
+      const isSearchPage = await page.evaluate(`() => !!document.querySelector('.product-list, [data-test="product-list"]')`);
       if (isSearchPage) {
         const link = await page.waitForSelector('a[href*="/p/"]', { timeout: 10000 }).catch(() => null);
         if (link) {
@@ -220,25 +267,25 @@ async function startServer() {
       }
 
       await page.waitForTimeout(3000);
-      await page.evaluate(() => window.scrollBy(0, 500));
+      await page.evaluate(`() => window.scrollBy(0, 500)`);
       await page.waitForTimeout(1000);
 
-      const liveDataRaw = await page.evaluate(() => {
-        const getT = (s: string) => (document.querySelector(s) as any)?.innerText.trim() || "";
+      const liveDataRaw = await page.evaluate(`() => {
+        const getT = (s) => document.querySelector(s)?.innerText?.trim() || "";
         const title = getT('[data-test="title"]') || getT('h1.page-title') || document.title;
         const priceStr = getT('[data-test="price"]') || getT('.promo-price') || "";
-        const priceMatch = priceStr.match(/(\d+),(\d{2})/) || priceStr.match(/(\d+)/);
-        const price = priceMatch ? (priceMatch[2] ? `${priceMatch[1]}.${priceMatch[2]}` : `${priceMatch[1]}.00`) : "N/A";
+        const priceMatch = priceStr.match(/(\\d+),(\\d{2})/) || priceStr.match(/(\\d+)/);
+        const price = priceMatch ? (priceMatch[2] ? priceMatch[1] + "." + priceMatch[2] : priceMatch[1] + ".00") : "N/A";
 
-        const images: string[] = [];
+        const images = [];
         document.querySelectorAll('img[src*="media.s-bol.com"]').forEach(img => {
-          const src = (img as any).src;
+          const src = img.src;
           if (src && !images.includes(src)) images.push(src);
         });
 
-        const bullets: string[] = [];
+        const bullets = [];
         document.querySelectorAll('[data-test="product-features"] li, .product-features li').forEach(li => {
-          bullets.push((li as any).innerText.trim());
+          bullets.push(li.innerText.trim());
         });
 
         const description = getT('[data-test="description"]') || getT('.js_product_description') || "";
@@ -253,14 +300,14 @@ async function startServer() {
           hasAPlus: document.querySelectorAll('.js_product_description img, .manufacturer-info img').length > 0 ? 1 : 0,
           shipping: getT('[data-test="delivery-highlight"]') || getT('.js_delivery_info') || "N/A"
         };
-      });
+      }`);
 
       const livedata = {
         ...liveDataRaw,
-        images: getUniqueImages(liveDataRaw.images)
+        images: (globalThis as any).getUniqueImages(liveDataRaw.images)
       };
 
-      const auditResult = performAudit(masterData, livedata, 'bol');
+      const auditResult = (globalThis as any).performAudit(masterData, livedata, 'bol');
       res.json({ liveData: livedata, auditResult });
 
     } catch (error: any) {
