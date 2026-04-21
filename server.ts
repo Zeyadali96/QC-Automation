@@ -151,18 +151,58 @@ async function startServer() {
       const content = await page.content();
       const $ = cheerio.load(content);
 
-      // 1. Image Extraction (Extracting main and secondary images, deduplicating via getUniqueImages)
+      // 1. Image Extraction (High-res, Deduplicated)
       let images: string[] = [];
-      const landingImg = $('#landingImage').attr('data-old-hires') || $('#landingImage').attr('src');
-      if (landingImg && landingImg.startsWith('http')) images.push(landingImg);
       
+      // Extraction Strategy A: Dynamic Image JSON (Highest Res)
+      const dynamicImageJson = $('#landingImage').attr('data-a-dynamic-image');
+      if (dynamicImageJson) {
+        try {
+          const imgMap = JSON.parse(dynamicImageJson);
+          const sortedImgs = Object.keys(imgMap).sort((a, b) => {
+            const resA = imgMap[a][0] * imgMap[a][1];
+            const resB = imgMap[b][0] * imgMap[b][1];
+            return resB - resA;
+          });
+          if (sortedImgs[0]) images.push(sortedImgs[0]);
+        } catch (e) {
+          console.warn("Failed to parse dynamic image JSON");
+        }
+      }
+
+      // Fallback for Main Image
+      if (images.length === 0) {
+        const landingImg = $('#landingImage').attr('data-old-hires') || $('#landingImage').attr('src');
+        if (landingImg && landingImg.startsWith('http')) images.push(landingImg);
+      }
+      
+      // Extraction Strategy B: Alt Images
       $('#altImages ul li img').each((_, el) => {
         const url = $(el).attr('data-old-hires') || $(el).attr('src');
         if (url && url.startsWith('http')) {
           images.push(url);
         }
       });
+
+      // Extraction Strategy C: Script-based (colorImages)
+      const bodyHtml = $('body').html() || "";
+      const colorImagesMatch = bodyHtml.match(/'colorImages':\s*({.+?}),/);
+      if (colorImagesMatch) {
+        try {
+          const colorImagesData = JSON.parse(colorImagesMatch[1].replace(/'/g, '"'));
+          const firstColor = Object.keys(colorImagesData.initial || colorImagesData)[0];
+          const colorImgs = (colorImagesData.initial || colorImagesData)[firstColor];
+          if (Array.isArray(colorImgs)) {
+            colorImgs.forEach((img: any) => {
+              if (img.hiRes) images.push(img.hiRes);
+              else if (img.large) images.push(img.large);
+            });
+          }
+        } catch (e) {}
+      }
+
       const uniqueImages = getUniqueImages(images);
+
 
       // A+ Content Extraction (Exclude Brand Stories)
       const aPlusContainer = $('.aplus-v2, #aplus, #premium-aplus').not('#brandStory_feature_div, .aplus-brand-story-v2, .aplus-brand-story-v1');
@@ -1263,18 +1303,21 @@ async function startServer() {
       
       if (url.includes('amazon.com') || url.includes('media-amazon.com')) {
         isAmazon = true;
-        try {
-          if (url.includes('/I/')) {
-            imgId = url.split('/I/')[1].split('.')[0];
-          } else {
-            const match = url.match(/\/images\/I\/([A-Za-z0-9_-]+)/);
-            if (match) imgId = match[1];
-          }
-        } catch (e) {
-          const match = url.match(/\/images\/I\/([A-Za-z0-9_-]+)/);
-          if (match) imgId = match[1];
+        
+        // Amazon High-Res Normalization
+        // 1. Extract ID (e.g., 81O5H... from /images/I/81O5H....jpg)
+        const idMatch = url.match(/\/I\/([A-Za-z0-9_-]+)/);
+        if (idMatch) {
+          imgId = idMatch[1];
+          
+          // 2. Construct High-Res URL (Strips resizing fragments like ._AC_SR38,50_)
+          // Example: .../I/81O5H.jpg or .../I/81O5H._SL1500_.jpg
+          processedUrl = url.replace(/\._[A-Z0-9,_-]+\./, '.'); 
+          // Prefer SL1500 for consistent high-res if original is too small
+          if (!processedUrl.endsWith('.jpg')) processedUrl += '.jpg';
         }
       } else if (url.includes('media.s-bol.com')) {
+
         const match = url.match(/media\.s-bol\.com\/([A-Za-z0-9_-]+)/);
         if (match) imgId = match[1];
         
