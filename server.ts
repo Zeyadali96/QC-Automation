@@ -605,7 +605,7 @@ async function startServer() {
       // Navigate to search results
       console.log(`Navigating to: ${searchUrl}`);
       try {
-        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
       } catch (e: any) {
         if (e.name === 'TimeoutError') {
           console.warn("Bol search navigation timed out, attempting to proceed...");
@@ -613,33 +613,43 @@ async function startServer() {
           throw e;
         }
       }
+
+      // Handle Cookie Consent Wall (even if cookies were set, Bol sometimes forces it)
+      const consentButton = 'button#js-first-screen-accept-all, [data-test="consent-modal-confirm-btn"], #consent_wall_confirm';
+      const hasConsent = await page.waitForSelector(consentButton, { timeout: 5000 }).catch(() => null);
+      if (hasConsent) {
+        console.log("Cookie consent wall detected, clicking Accept...");
+        await hasConsent.click();
+        await page.waitForTimeout(1000);
+      }
       
       // Check for CAPTCHA or blocking (including IP block message)
       const isBlocked = await page.evaluate(function() {
         // @ts-ignore
         if (typeof __name === 'undefined') { (window as any).__name = (t: any, v: any) => t; }
         const text = document.body.innerText;
-        return document.title.includes('Robot Check') || 
-               text.includes('Type the characters you see in this image') ||
-               text.includes('To discuss automated access to Amazon data please contact') ||
+        const title = document.title;
+        return title.includes('Robot Check') || 
                text.includes('Ben je een robot?') ||
                text.includes('rustig aan speed racer') ||
                text.includes('Je gaat iets te snel') ||
                text.includes('IP adres is geblokkeerd') ||
-               text.includes('IP address is blocked');
+               text.includes('IP address is blocked') ||
+               // If it's just the home page description, it might be a silent redirect
+               (title === 'bol.com | De winkel van ons allemaal' && !text.includes('zoekresultaten') && !text.includes('artikel'));
       });
 
       if (isBlocked) {
-        const blockText = await page.evaluate(() => document.body.innerText);
-        if (blockText.includes('IP adres is geblokkeerd')) {
-          throw new Error("IP_BLOCKED");
+        const title = await page.title();
+        if (title === 'bol.com | De winkel van ons allemaal') {
+          throw new Error("Bol.com redirected to homepage (Bot Detection). Try again in a few minutes.");
         }
-        throw new Error("Bol.com blocked the request (Rate limited / Speed Racer detected). Please wait a few minutes.");
+        throw new Error(`Bol.com blocked the request (Title: ${title}). Please wait or check proxy.`);
       }
 
       // Check if we are on a search page or product page
       let pageTitle = await page.title();
-      console.log(`Page Title: ${pageTitle}`);
+      console.log(`Page Title after consent/wait: ${pageTitle}`);
       
       const isSearchPage = pageTitle.includes('Alle artikelen') || 
                            pageTitle.includes('Zoekresultaten') || 
