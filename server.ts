@@ -10,7 +10,14 @@ import { google } from "googleapis";
 import stringSimilarity from "string-similarity";
 import sharp from "sharp";
 import { differenceInDays, parse } from 'date-fns';
-import { chromium } from "playwright";
+import { chromium as chromiumBase } from "playwright";
+import { chromium } from "playwright-extra";
+import stealth from "puppeteer-extra-plugin-stealth";
+
+// Use stealth plugin
+chromium.use(stealth());
+
+
 
 async function startServer() {
   const app = express();
@@ -144,18 +151,16 @@ async function startServer() {
         throw new Error("Amazon blocked the request with a CAPTCHA. Please try again later.");
       }
 
-      // Wait a bit more for dynamic elements (variations, etc.)
-      await page.waitForTimeout(3000);
-      
-      // Get content
-      const content = await page.content();
-      const $ = cheerio.load(content);
-
-      // 1. Image Extraction (High-res, Deduplicated)
-      let images: string[] = [];
+      // Wait a bit more for dynamic elements
+      await page.waitForTimeout(4000);
       
       // Extraction Strategy A: Dynamic Image JSON (Highest Res)
-      const dynamicImageJson = $('#landingImage').attr('data-a-dynamic-image');
+      const dynamicImageJson = await page.evaluate(() => {
+        const img = document.querySelector('#landingImage');
+        return img ? img.getAttribute('data-a-dynamic-image') : null;
+      });
+
+      let images: string[] = [];
       if (dynamicImageJson) {
         try {
           const imgMap = JSON.parse(dynamicImageJson);
@@ -170,38 +175,50 @@ async function startServer() {
         }
       }
 
-      // Fallback for Main Image
-      if (images.length === 0) {
-        const landingImg = $('#landingImage').attr('data-old-hires') || $('#landingImage').attr('src');
-        if (landingImg && landingImg.startsWith('http')) images.push(landingImg);
-      }
-      
-      // Extraction Strategy B: Alt Images
-      $('#altImages ul li img').each((_, el) => {
-        const url = $(el).attr('data-old-hires') || $(el).attr('src');
-        if (url && url.startsWith('http')) {
-          images.push(url);
+      // Extraction Strategy B: Script-based (colorImages) - High Res
+      const colorImagesData = await page.evaluate(() => {
+        const scripts = Array.from(document.querySelectorAll('script'));
+        for (const script of scripts) {
+          const content = script.innerHTML;
+          if (content.includes('colorImages')) {
+            const match = content.match(/'colorImages':\s*({.+?}),/);
+            if (match) {
+              try {
+                return JSON.parse(match[1].replace(/'/g, '"'));
+              } catch (e) { return null; }
+            }
+          }
         }
+        return null;
       });
 
-      // Extraction Strategy C: Script-based (colorImages)
-      const bodyHtml = $('body').html() || "";
-      const colorImagesMatch = bodyHtml.match(/'colorImages':\s*({.+?}),/);
-      if (colorImagesMatch) {
-        try {
-          const colorImagesData = JSON.parse(colorImagesMatch[1].replace(/'/g, '"'));
-          const firstColor = Object.keys(colorImagesData.initial || colorImagesData)[0];
-          const colorImgs = (colorImagesData.initial || colorImagesData)[firstColor];
-          if (Array.isArray(colorImgs)) {
-            colorImgs.forEach((img: any) => {
-              if (img.hiRes) images.push(img.hiRes);
-              else if (img.large) images.push(img.large);
-            });
-          }
-        } catch (e) {}
+      if (colorImagesData) {
+        const firstColor = Object.keys(colorImagesData.initial || colorImagesData)[0];
+        const colorImgs = (colorImagesData.initial || colorImagesData)[firstColor];
+        if (Array.isArray(colorImgs)) {
+          colorImgs.forEach((img: any) => {
+            const url = img.hiRes || img.large || img.main?.['1500']?.[0];
+            if (url && !images.includes(url)) images.push(url);
+          });
+        }
       }
 
+      // Extraction Strategy C: Alt Images (as fallback or addition)
+      const altImgUrls = await page.evaluate(() => {
+        return Array.from(document.querySelectorAll('#altImages ul li img'))
+          .map((img: any) => img.getAttribute('data-old-hires') || img.src)
+          .filter(src => src && src.startsWith('http'))
+          .map(src => src.split('._')[0] + '.jpg'); // Early normalizer
+      });
+      images = [...images, ...altImgUrls];
+
       const uniqueImages = getUniqueImages(images);
+
+      // Get content
+      const content = await page.content();
+      const $ = cheerio.load(content);
+
+
 
 
       // A+ Content Extraction (Exclude Brand Stories)
@@ -541,21 +558,26 @@ async function startServer() {
       }
       
       // Check for CAPTCHA or blocking
-      const isBlocked = await page.evaluate(function() {
-        // @ts-ignore
-        if (typeof __name === 'undefined') { (window as any).__name = (t: any, v: any) => t; }
+      const blockStatus = await page.evaluate(function() {
         const text = document.body.innerText;
-        return document.title.includes('Robot Check') || 
-               text.includes('Type the characters you see in this image') ||
-               text.includes('To discuss automated access to Amazon data please contact') ||
-               text.includes('Ben je een robot?') ||
-               text.includes('rustig aan speed racer') ||
-               text.includes('Je gaat iets te snel');
+        const title = document.title;
+        if (title.includes('geblokkeerd') || text.includes('geblokkeerd') || title.includes('Access Denied')) {
+          return { blocked: true, message: "Bol.com blocked the server IP. (Access Denied)" };
+        }
+        if (title.includes('Robot Check') || text.includes('Type the characters')) {
+          return { blocked: true, message: "Amazon-style Robot Check detected." };
+        }
+        if (text.includes('Ben je een robot?') || text.includes('Je gaat iets te snel')) {
+          return { blocked: true, message: "Bol.com bot detection triggered." };
+        }
+        return { blocked: false };
       });
 
-      if (isBlocked) {
-        throw new Error("Bol.com blocked the request (Rate limited / Speed Racer detected). Please wait a few minutes.");
+      if (blockStatus.blocked) {
+        throw new Error(blockStatus.message);
       }
+
+
 
       // Check if we are on a search page or product page
       let pageTitle = await page.title();
@@ -616,9 +638,17 @@ async function startServer() {
       }
 
       // Ensure we are on a product page
-      await page.waitForSelector('div#pdp_main_section, [data-test="title"], h1.page-title, #buyBlockSlot', { timeout: 30000 }).catch(() => {
+      try {
+        await page.waitForSelector('div#pdp_main_section, [data-test="title"], h1.page-title, #buyBlockSlot, .pdp-header', { timeout: 30000 });
+      } catch (e) {
+        // Double check block status if selector fails
+        const currentTitle = await page.title();
+        if (currentTitle.toLowerCase().includes('geblokkeerd') || currentTitle.toLowerCase().includes('access denied')) {
+           throw new Error("Bol.com blocked the server IP. (Access Denied)");
+        }
         console.warn("Product indicators not found, page might be slow or not a product page.");
-      });
+      }
+
 
       // Wait for network idle to ensure hydration
       await page.waitForLoadState('load', { timeout: 15000 }).catch(() => null);
@@ -656,180 +686,118 @@ async function startServer() {
         // 2. Description
         let description = "";
         
-        // Prioritize "Productbeschrijving" heading extraction
-        const headings = Array.from(document.querySelectorAll('h2, h3, h4, b, strong, span'));
-        const descHeading = headings.find(h => {
-          const t = (h as any).innerText || (h as any).textContent || "";
-          return t.includes('Productbeschrijving') || t.includes('Product description');
-        });
+        // Strategy A: Dedicated description div
+        const descSelectors = [
+          '[data-test="description"]',
+          '.js_product_description',
+          '.pdp-description',
+          '.product-description',
+          'div[itemprop="description"]',
+          '#descriptionBlock',
+          '.product-description-content',
+          'section#description',
+          '.specs-content',
+          '.manufacturer-info'
+        ];
         
-        if (descHeading) {
-           const parent = descHeading.closest('section') || descHeading.parentElement;
-           if (parent) {
-              const clone = parent.cloneNode(true) as HTMLElement;
-              const UI_SELECTORS = ['.js_description_read_more', '[data-test="read-more"]', '.pdp-description__read-more', 'button', 'a.button--link'];
-              UI_SELECTORS.forEach(sel => {
-                clone.querySelectorAll(sel).forEach(btn => btn.remove());
-              });
-              const text = (clone as any).innerText || (clone as any).textContent || "";
-              description = text.replace(/Productbeschrijving|Product description/i, '').trim();
-              // Global clean for UI fragments
-              description = description.replace(/toon meer|toon minder/gi, '').trim();
-           }
+        for (const s of descSelectors) {
+          const el = document.querySelector(s);
+          if (el) {
+            description = (el as any).innerText.trim();
+            if (description.length > 50) break;
+          }
         }
 
+        // Strategy B: All text in the main description section
         if (!description || description.length < 50) {
-          const descSelectors = [
-            '[data-test="description"]',
-            '[data-test="product-description"]',
-            '.js_product_description',
-            '.product-description',
-            '.product-description-content',
-            'div[itemprop="description"]',
-            '#descriptionBlock',
-            'section#description',
-            '.slot-product-description',
-            '.pdp-description',
-            '.manufacturer-info', // Bol A+ equivalent
-            '.product-info',      // Bol A+ equivalent
-            '[data-test="product-info"]'
-          ];
-          
-          // Try to expand "Lees meer" if it exists
-          const readMore = document.querySelector('.js_description_read_more, [data-test="read-more"], .pdp-description__read-more');
-          if (readMore) (readMore as any).click();
-
-          let pooledText = "";
-          for (const s of descSelectors) {
-            const el = document.querySelector(s);
-            if (el) {
-               const clone = el.cloneNode(true) as HTMLElement;
-               const UI_SELECTORS = ['.js_description_read_more', '[data-test="read-more"]', '.pdp-description__read-more', 'button', 'a.button--link'];
-               UI_SELECTORS.forEach(sel => {
-                 clone.querySelectorAll(sel).forEach(btn => btn.remove());
-               });
-               const text = (clone as any).innerText || (clone as any).textContent || "";
-               if (text.trim().length > 20) {
-                  let html = clone.innerHTML;
-                  let t = html.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<\/div>/gi, '\n').replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim();
-                  // Secondary cleanup for text fragments
-                  t = t.replace(/toon meer|toon minder/gi, '').trim();
-                  
-                  if (!pooledText.includes(t)) {
-                    pooledText += (pooledText ? "\n\n" : "") + t;
-                  }
-               }
-            }
-          }
-          if (pooledText) description = pooledText;
+           const mainSection = document.querySelector('div#pdp_main_section') || document.querySelector('.pdp-header');
+           if (mainSection) {
+              const text = (mainSection as any).innerText || "";
+              const match = text.match(/Productbeschrijving([\s\S]+?)Productspecificaties/i);
+              if (match) description = match[1].trim();
+           }
         }
 
         // 3. Price
         let price = "N/A";
-        const promoEl = document.querySelector('#buyBlockSlot [class*="text-promo-text-high"]') || 
-                        document.querySelector('.promo-price') || 
-                        document.querySelector('[data-test="price"]') ||
-                        document.querySelector('.buy-block__price');
-        if (promoEl) {
-           price = (promoEl as any).innerText.replace(/\s+/g, '').replace('€', '').trim().replace(',', '.');
-           // Ensure it's a valid price format
-           if (!/^\d+\.\d+$/.test(price) && price.includes('.')) {
-              // already okay
-           } else if (/^\d+$/.test(price)) {
-              // missing cents? Bol usually has ,- for round numbers
+        const priceSelectors = [
+           '[data-test="price"]',
+           '.promo-price',
+           '.buy-block__price',
+           '.ab-pdp-price-and-shipping__price',
+           '[data-test="price-amount"]'
+        ];
+        for (const s of priceSelectors) {
+           const el = document.querySelector(s);
+           if (el) {
+              price = (el as any).innerText.replace(/\s+/g, '').replace('€', '').trim().replace(',', '.');
+              if (price) break;
            }
-        } else {
-          const buyBlock = document.querySelector('#buyBlockSlot') || document.querySelector('.buy-block') || document.querySelector('[data-test="buy-block"]');
-          if (buyBlock) {
-             const text = (buyBlock as any).innerText;
-             const match = text.match(/(\d+),(\d{2})/) || text.match(/(\d+),-/);
-             if (match) price = match[2] ? `${match[1]}.${match[2]}` : `${match[1]}.00`;
-          }
-          if (price === "N/A") {
-            const meta = document.querySelector('meta[property="product:price:amount"]') || document.querySelector('meta[itemprop="price"]');
-            if (meta) price = meta.getAttribute('content') || "N/A";
-          }
         }
 
         // 4. Shipping
         let shippingText = "N/A";
-        // Look for "Uiterlijk [Date] in huis" or "Morgen in huis"
-        const deliveryPromise = document.querySelector('.delivery-promise') || 
-                                document.querySelector('[data-test="delivery-highlight"]') || 
-                                document.querySelector('.delivery-delivery-time') || 
-                                document.querySelector('[data-test="delivery-promise"]') ||
-                                document.querySelector('.buy-block__delivery-text');
-                                
-        if (deliveryPromise) {
-          shippingText = (deliveryPromise as any).innerText.trim();
-        } else {
-          const bodyText = document.body.innerText;
-          const uiterlijkMatch = bodyText.match(/Uiterlijk\s+(.+?)\s+in\s+huis/i);
-          if (uiterlijkMatch) shippingText = uiterlijkMatch[0];
-        }
-
-        // 5. Images (Revised extraction to avoid empty results)
-        let images: string[] = [];
-        
-        // Strategy 1: Preload tags (Often has high-res URLs)
-        try {
-          const preloads = Array.from(document.querySelectorAll('link[rel="preload"][as="image"]'));
-          preloads.forEach(link => {
-            const href = link.getAttribute('href');
-            if (href && href.includes('media.s-bol.com')) images.push(href);
-          });
-        } catch(e) {}
-
-        // Strategy 2: Main image selectors
-        const mainSelectors = [
-          '[data-test="product-main-image"] img',
-          '.js_main_product_image',
-          '.pdp-main-image img',
-          'img.js_main_product_image'
+        const shipSelectors = [
+           '[data-test="delivery-highlight"]',
+           '.delivery-promise',
+           '.buy-block__delivery-text',
+           '.delivery-delivery-time'
         ];
-        for(const s of mainSelectors) {
-          const img = document.querySelector(s);
-          if (img) {
-            const src = (img as any).src || img.getAttribute('src');
-            if (src && src.startsWith('http')) images.push(src);
-          }
+        for (const s of shipSelectors) {
+           const el = document.querySelector(s);
+           if (el) {
+              shippingText = (el as any).innerText.trim();
+              if (shippingText) break;
+           }
         }
-        
-        // Strategy 3: Thumbnails
-        const thumbSelectors = [
-          '.js_product_media_items img',
-          '.pdp-images img',
-          '.js_image_container img',
+
+        // 5. Images
+        let images: string[] = [];
+        const imgSelectors = [
+          '.js_product_media_items img', 
+          '.pdp-images img', 
+          '[data-test="product-main-image"] img',
           '.product-images__item img'
         ];
-        for(const s of thumbSelectors) {
-          const thumbs = Array.from(document.querySelectorAll(s));
-          thumbs.forEach(img => {
+        imgSelectors.forEach(s => {
+          const imgEls = Array.from(document.querySelectorAll(s));
+          imgEls.forEach(img => {
             const src = (img as any).src || img.getAttribute('data-src') || img.getAttribute('src');
             if (src && src.includes('media.s-bol.com')) {
-              images.push(src);
+               // Normalize to large version
+               const largeUrl = src.replace(/\/\d+x\d+\//, "/large/").replace("/small/", "/large/").replace("/thumb/", "/large/");
+               images.push(largeUrl);
             }
           });
-        }
-        
-        // 6. Variations & A+
+        });
+
+        // 6. Variations
         const hasVariations = !!(
-          document.querySelector('[data-test="variant-selector"]') || 
-          document.querySelector('.variant-selector') || 
-          document.querySelector('.js_bundle_as_variant_selector') ||
-          document.querySelector('[data-test="variant-dropdown"]') ||
-          document.querySelector('.js_variant_selector') ||
-          document.querySelector('[data-test="variant-list"]') ||
-          document.querySelector('.pdp-variant-selector') ||
-          document.querySelector('.js_variant_dropdown') ||
-          // Broad pattern matching for variation themes
-          Array.from(document.querySelectorAll('span, div, h3, label')).some(el => {
-            const t = (el as any).innerText || "";
-            const themes = [
-              'Kies je kleur', 
-              'Kies je maat', 
-              'Kies je variant', 
-              'Kies je bestanddeel', 
+           document.querySelector('[data-test="variant-selector"]') || 
+           document.querySelector('.variant-selector') || 
+           document.querySelector('.js_variant_selector') ||
+           document.querySelector('.pdp-variant-selector')
+        );
+
+        return {
+          title,
+          description: description || "No description on detail page",
+          price,
+          shipping: shippingText,
+          images: Array.from(new Set(images)),
+          variations: hasVariations ? 1 : 0
+        };
+      });
+
+      const liveData = {
+        ...liveDataRaw,
+        bullets: [],
+        hasAPlus: false
+      };
+
+      const auditResult = performAudit(masterData, liveData, 'bol');
+      res.json({ liveData, auditResult });
+
               'Kies je model',
               'Kies je type',
               'Kies je uitvoering',
@@ -1310,13 +1278,24 @@ async function startServer() {
         if (idMatch) {
           imgId = idMatch[1];
           
-          // 2. Construct High-Res URL (Strips resizing fragments like ._AC_SR38,50_)
-          // Example: .../I/81O5H.jpg or .../I/81O5H._SL1500_.jpg
-          processedUrl = url.replace(/\._[A-Z0-9,_-]+\./, '.'); 
-          // Prefer SL1500 for consistent high-res if original is too small
-          if (!processedUrl.endsWith('.jpg')) processedUrl += '.jpg';
+          // 2. Construct High-Res URL (Strips sizing fragments correctly)
+          // Aggressive strip of Amazon image processors like ._AC_..._ or ._SL..._
+          const cleanUrl = url.split(/\.\_[A-Z][A-Z0-9,_-]{3,}\./)[0];
+          if (cleanUrl.includes('/I/')) {
+            processedUrl = cleanUrl + '.jpg';
+          } else {
+             // Fallback for non /I/ urls
+             processedUrl = url.replace(/\._[A-Z0-9,_-]{5,}(\.|$|_)/, '.');
+             if (!processedUrl.endsWith('.jpg')) {
+                const parts = processedUrl.split('.');
+                processedUrl = (parts.length > 1 ? parts.slice(0, -1).join('.') : processedUrl) + '.jpg';
+             }
+          }
         }
       } else if (url.includes('media.s-bol.com')) {
+
+
+
 
         const match = url.match(/media\.s-bol\.com\/([A-Za-z0-9_-]+)/);
         if (match) imgId = match[1];
