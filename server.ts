@@ -1,4 +1,4 @@
-﻿import express from "express";
+import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import cors from "cors";
@@ -10,7 +10,11 @@ import { google } from "googleapis";
 import stringSimilarity from "string-similarity";
 import sharp from "sharp";
 import { differenceInDays, parse } from 'date-fns';
-import { chromium } from "playwright";
+import { chromium } from "playwright-extra";
+import stealth from "puppeteer-extra-plugin-stealth";
+
+// Use stealth plugin
+chromium.use(stealth());
 
 async function startServer() {
   const app = express();
@@ -436,7 +440,7 @@ async function startServer() {
         rawShipping: rawShippingTime || "N/A",
         variations: hasVariations ? 1 : 0,
         hasAPlus: hasAPlus,
-        images: uniqueImages.length > 0 ? [uniqueImages[0]] : []
+        images: uniqueImages
       };
 
       const auditResult = performAudit(masterData, liveData, 'amazon', domain);
