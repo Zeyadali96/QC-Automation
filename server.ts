@@ -190,7 +190,9 @@ async function startServer() {
       }`);
 
       // Cleanup images in server-side helper
-      livedata.images = (globalThis as any).getUniqueImages(livedata.images);
+      if (livedata) {
+        livedata.images = (globalThis as any).getUniqueImages(livedata.images || []);
+      }
 
       const auditResult = (globalThis as any).performAudit(masterData, livedata, 'amazon', domain);
       res.json({ liveData: livedata, auditResult });
