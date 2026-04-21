@@ -217,12 +217,53 @@ async function startServer() {
       }
 
       // If description is empty but A+ is present, use A+ data
-      if (!amazonDesc && aPlusData) {
-        amazonDesc = `APLUS_DATA:${JSON.stringify(aPlusData)}`;
-      } else if (!amazonDesc) {
-        amazonDesc = "No description on detail page";
+      
+      // Extraction Results
+      const liveDataRaw: any = {};
+      
+      // 1. Title
+      liveDataRaw.title = $('#productTitle').text().trim() || "";
+      
+      // 2. Images
+      const images: string[] = [];
+      const imgSelectors = [
+        '#imgTagWrapperId img',
+        '#landingImage',
+        '.a-dynamic-image',
+        '#main-image',
+        '.imgTagWrapper img'
+      ];
+      for (const s of imgSelectors) {
+        const src = $(s).attr('data-old-hires') || $(s).attr('src') || $(s).attr('data-a-dynamic-image');
+        if (src) {
+          if (src.startsWith('{')) {
+             try { images.push(Object.keys(JSON.parse(src))[0]); } catch(e){}
+          } else {
+            images.push(src);
+          }
+        }
       }
+      liveDataRaw.images = getUniqueImages(images);
+      
+      // 3. Bullets
+      const bullets: string[] = [];
+      $('#feature-bullets ul li span').each((i, el) => {
+        const text = $(el).text().trim();
+        if (text && !text.includes('Make sure this fits')) bullets.push(text);
+      });
+      liveDataRaw.bullets = bullets;
+      
+      // 4. Description
+      liveDataRaw.description = $('#productDescription').text().trim() || "";
+      
+      // 5. A+ Content Detection
+      liveDataRaw.hasAPlus = $('#aplus').length > 0 || $('.aplus-v2').length > 0;
+      
+      // 6. Variations
+      liveDataRaw.variations = $('#twister').length > 0 || $('#variation_color_name').length > 0;
 
+      // 7. Shipping Time Extraction
+      let rawShippingTime = "";
       // Shipping Extraction (Target: Right-side Buybox and delivery elements)
       const deliverySelectors = [
         'div#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_ID',
@@ -242,57 +283,35 @@ async function startServer() {
         '.a-box .a-box-group .a-text-bold',
         '[data-a-color="teletype"]'
       ];
-      
-      let rawShippingTime = "";
-      for (const selector of deliverySelectors) {
-        const el = $(selector);
-        if (el.length) {
-          rawShippingTime = el.find('span').attr('data-csa-c-delivery-time') || el.attr('data-csa-c-delivery-time') || "";
-          if (!rawShippingTime) {
-            // Try to find the bold text which usually contains the date
-            rawShippingTime = el.find('.a-text-bold').first().text().trim() || el.text().trim();
-          }
-          if (rawShippingTime) break;
-        }
+
+      for (const s of deliverySelectors) {
+         const t = $(s).text().trim();
+         if (t) {
+           rawShippingTime = t;
+           break;
+         }
       }
-      
-      console.log(`Extracted Raw Shipping: ${rawShippingTime}`);
       
       let shippingDaysNum = 0;
       let shippingDaysStr = "N/A";
+      
       if (rawShippingTime) {
         try {
-          const today = new Date();
-          const currentYear = today.getFullYear();
-          
           let dateStr = rawShippingTime;
-          // Handle ranges by taking the first date
+          const currentYear = new Date().getFullYear();
           if (dateStr.includes('-')) {
             dateStr = dateStr.split('-')[0].trim();
           }
           
-          // Month maps for international Amazon sites
+          // Basic Dutch parsing for Amazon.nl
           const nlMonthMap: Record<string, number> = {
             'januari': 0, 'februari': 1, 'maart': 2, 'april': 3, 'mei': 4, 'juni': 5,
             'juli': 6, 'augustus': 7, 'september': 8, 'oktober': 9, 'november': 10, 'december': 11
           };
-          const enMonthMap: Record<string, number> = {
-            'january': 0, 'february': 1, 'march': 2, 'april': 3, 'may': 4, 'june': 5,
-            'july': 6, 'august': 7, 'september': 8, 'october': 9, 'november': 10, 'december': 11,
-            'jan': 0, 'feb': 1, 'mar': 2, 'apr': 3, 'may': 4, 'jun': 5, 'jul': 6, 'aug': 7, 'sep': 8, 'oct': 9, 'nov': 10, 'dec': 11
-          };
-          const deMonthMap: Record<string, number> = {
-            'januar': 0, 'februar': 1, 'märz': 2, 'april': 3, 'mai': 4, 'juni': 5,
-            'juli': 6, 'august': 7, 'september': 8, 'oktober': 9, 'november': 10, 'dezember': 11
-          };
-          const plMonthMap: Record<string, number> = {
-            'stycznia': 0, 'lutego': 1, 'marca': 2, 'kwietnia': 3, 'maja': 4, 'czerwca': 5,
-            'lipca': 6, 'sierpnia': 7, 'września': 8, 'października': 9, 'listopada': 10, 'grudnia': 11
-          };
 
           const s = dateStr.toLowerCase();
           const dayMatch = s.match(/\d+/);
-          const monthMatch = s.match(/[a-zäöüßżćśóźńłęą]+/g) || [];
+          const monthMatch = s.match(/[a-z]+/g) || [];
           
           let targetDate: Date | null = null;
 
@@ -301,28 +320,24 @@ async function startServer() {
             let monthIndex = -1;
             
             for (const monthName of monthMatch) {
-              if (nlMonthMap[monthName] !== undefined) monthIndex = nlMonthMap[monthName];
-              else if (enMonthMap[monthName] !== undefined) monthIndex = enMonthMap[monthName];
-              else if (deMonthMap[monthName] !== undefined) monthIndex = deMonthMap[monthName];
-              else if (plMonthMap[monthName] !== undefined) monthIndex = plMonthMap[monthName];
-              if (monthIndex !== -1) break;
+              if (nlMonthMap[monthName] !== undefined) {
+                monthIndex = nlMonthMap[monthName];
+                break;
+              }
             }
 
             if (monthIndex !== -1) {
               targetDate = new Date(currentYear, monthIndex, day);
             } else {
+              // Try standard parsing
               const parsed = new Date(dateStr + ` ${currentYear}`);
               if (!isNaN(parsed.getTime())) targetDate = parsed;
             }
           }
 
-          if (!targetDate) {
-            if (/morgen|tomorrow|morgen|jutro/i.test(s)) {
-              targetDate = new Date();
-              targetDate.setDate(targetDate.getDate() + 1);
-            } else if (/vandaag|today|heute|dzisiaj/i.test(s)) {
-              targetDate = new Date();
-            }
+          if (!targetDate && /morgen|tomorrow/i.test(s)) {
+            targetDate = new Date();
+            targetDate.setDate(targetDate.getDate() + 1);
           }
 
           if (targetDate) {
@@ -331,14 +346,15 @@ async function startServer() {
             todayClean.setHours(0, 0, 0, 0);
             const diff = differenceInDays(targetDate, todayClean);
             shippingDaysNum = diff >= 0 ? diff : 0;
-            shippingDaysStr = `${shippingDaysNum} Day${shippingDaysNum === 1 ? '' : 's'}`;
-            console.log(`Calculated Shipping: ${shippingDaysStr} (diff: ${diff})`);
+            shippingDaysStr = `${shippingDaysNum} Days`;
           }
         } catch (e) {
           console.error("Shipping parsing error:", e);
         }
       }
-
+      liveDataRaw.shipping = rawShippingTime;
+      liveDataRaw.shippingDaysString = shippingDaysStr;
+      
       // Price Extraction (Target: #corePriceDisplay_desktop_feature_div with multiple fallbacks)
       let priceDisplay = "N/A";
       let listPrice = "N/A";
@@ -356,175 +372,40 @@ async function startServer() {
       }
       
       // Fallback selectors if primary didn't work
-      if (!priceDisplay || priceDisplay === "N/A" || priceDisplay === "") {
-        const fallbacks = [
-          '#price_inside_buybox',
-          '#priceblock_ourprice',
-          '#priceblock_dealprice',
-          'span.a-price span.a-offscreen',
-          'span.a-color-price',
-          '.apexPriceToPay',
-          '#corePrice_desktop_feature_div .a-offscreen',
-          '#buyNew_non_vat_price',
-          '.a-price[data-a-size="xl"] .a-offscreen',
-          '.a-price[data-a-size="l"] .a-offscreen'
-        ];
-        
-        for (const selector of fallbacks) {
-          const text = $(selector).first().text().trim();
-          if (text && text !== "" && text !== "N/A") {
-            priceDisplay = text;
-            break;
-          }
-        }
+      if (!priceDisplay || priceDisplay === "N/A") {
+        priceDisplay = $('#price_inside_buybox').text().trim() || 
+                       $('#priceblock_ourprice').text().trim() ||
+                       $('#priceblock_dealprice').text().trim() ||
+                       $('span.a-price span.a-offscreen').first().text().trim() ||
+                       $('span#priceblock_ourprice').text().trim() ||
+                       $('span.a-color-price').first().text().trim() ||
+                       $('input[name="items[0.base][customerVisiblePrice][displayString]"]').val() as string || 
+                       $('.a-price.a-text-price .a-offscreen').first().text().trim() ||
+                       $('.apexPriceToPay').text().trim() ||
+                       "N/A";
       }
-
+      
       const variationSelectors = [
-        '.swatches',
-        '.inline-twister-row',
-        '#twister',
-        '#inline-twister-row-size_name',
-        '#inline-twister-row-color_name',
-        'li.swatchAvailable',
-        '#variation_size_name',
-        '#variation_color_name',
-        '#variation_style_name',
-        '#twister-main-container',
-        'select#native_dropdown_selected_size_name',
-        '.twister-style-2',
-        '#variation_edition_name',
-        '#variation_pattern_name',
-        '#variation_scent_name',
-        '#variation_item_package_quantity',
-        '#variation_flavor_name',
-        '#variation_material_name',
-        '.twister-container',
-        '[id^="variation_"]',
-        '.a-section.twister-row',
-        '#native_dropdown_selected_color_name',
-        '#native_dropdown_selected_style_name',
-        '.swatchSelect',
-        '.swatchAvailable',
-        '.a-declarative[data-action="a-modal"]', // Often used for size charts/variations
-        '[data-variation-name]',
-        '.twister-row',
-        '#variation_type',
-        '#variation_name',
-        '.variation-group',
-        '.js_attribute_selector'
+        '#variation_color_name li.swatchAvailable',
+        '#variation_size_name li.swatchAvailable',
+        '#native_dropdown_selected_size_name option',
+        '.a-button-text .selection'
       ];
-      let hasVariations = false;
-      for (const selector of variationSelectors) {
-        if ($(selector).length > 0) {
-          hasVariations = true;
-          break;
-        }
-      }
+      liveDataRaw.variations = $(variationSelectors.join(', ')).length > 0 ? 1 : 0;
       
-      // Fallback: check for any element with "variation" in ID or class inside a twister container
-      if (!hasVariations) {
-        if ($('[id*="variation"], [class*="variation"]').length > 0 && ($('#twister-main-container, #twister').length > 0 || $('.twister-row').length > 0)) {
-          hasVariations = true;
-        }
-      }
+      // Extract numeric price
+      const priceMatch = priceDisplay.replace(/[^\d,. ]/g, '').match(/(\d+[.,]\d{2})/) || priceDisplay.match(/(\d+)/);
+      liveDataRaw.price = priceMatch ? priceMatch[0].replace(',', '.') : "N/A";
+
+      console.log(`Extracted Amazon Price: ${liveDataRaw.price}`);
+
+      // Perform Audit
+      const auditResults = performAudit(masterData, liveDataRaw, 'amazon', domain);
       
-      // Additional check for labels which often indicate variations across all categories
-      if (!hasVariations) {
-        const twisterText = $('#twister-main-container, #twister, #variation_type, #variation_name').text().toLowerCase();
-        const variationKeywords = [
-          // Basic
-          'size:', 'color:', 'style:', 'rozmiar:', 'kolor:', 'styl:', 'gr├╢sse:', 'farbe:', 'storlek:', 'f├جrg:',
-          'edition:', 'pattern:', 'scent:', 'flavor:', 'material:', 'configuration:', 'capacity:', 'length:',
-          'width:', 'height:', 'weight:', 'volume:', 'quantity:', 'package:', 'type:', 'model:', 'version:',
-          'platform:', 'format:', 'design:', 'finish:', 'voltage:', 'wattage:', 'amperage:', 'speed:',
-          'memory:', 'storage:', 'display:', 'screen:', 'resolution:', 'connectivity:', 'interface:',
-          'compatibility:', 'os:', 'language:', 'region:', 'country:', 'age:', 'gender:',
-          // Extended Physical
-          'thickness:', 'diameter:', 'depth:', 'fabric:', 'material_type:', 'bundle:', 'set:', 'pack:', 'count:',
-          'thickness:', 'diameter:', 'depth:', 'item_dimensions:', 'item_weight:', 'item_form:',
-          // Tech & Electronics
-          'hardware_platform:', 'software_edition:', 'connectivity_technology:', 'wireless_communication_technology:',
-          'power_source:', 'battery_type:', 'memory_storage_capacity:', 'display_size:', 'screen_size:',
-          // Apparel & Accessories
-          'shoe_size:', 'apparel_size:', 'lens_color:', 'frame_color:', 'lens_width:', 'hand_orientation:',
-          // Sports & Outdoors
-          'shaft_material:', 'flex:', 'grip_size:', 'tension:', 'weight_class:',
-          // Beauty & Health
-          'scent_description:', 'item_form:', 'unit_count:', 'number_of_items:', 'number_of_pieces:',
-          // Localized Polish
-          'grubo┼ؤ─ç:', '┼ؤrednica:', 'g┼é─آboko┼ؤ─ç:', 'tkanina:', 'zestaw:', 'opakowanie:', 'liczba:', 'cz─آstotliwo┼ؤ─ç:',
-          'gwarancja:', 'platforma:', 'wersja:', 'rozdzielczo┼ؤ─ç:', 'kompatybilno┼ؤ─ç:', 'j─آzyk:', 'kraj:', 'wiek:', 'p┼ée─ç:',
-          // Localized German
-          'dicke:', 'durchmesser:', 'tiefe:', 'stoff:', 'set:', 'packung:', 'anzahl:', 'frequenz:', 'garantie:',
-          'plattform:', 'version:', 'aufl├╢sung:', 'kompatibilit├جt:', 'sprache:', 'land:', 'alter:', 'geschlecht:',
-          // Localized Swedish
-          'tjocklek:', 'diameter:', 'djup:', 'tyg:', 'set:', 'f├╢rpackning:', 'antal:', 'frekvens:', 'garanti:',
-          'plattform:', 'version:', 'uppl├╢sning:', 'kompatibilitet:', 'spr├حk:', 'land:', '├حlder:', 'k├╢n:',
-          // Internal Amazon Names
-          'size_name', 'color_name', 'style_name', 'item_package_quantity', 'unit_count', 'customer_defined_variation',
-          'scent_name', 'flavor_name', 'material_name', 'pattern_name', 'edition_name'
-        ];
-        if (variationKeywords.some(k => twisterText.includes(k))) {
-          hasVariations = true;
-        }
-      }
-      
-      // Final check: look for any list or select inside twister that has more than one option
-      if (!hasVariations) {
-        const twisterOptions = $('#twister-main-container select option, #twister-main-container ul li').length;
-        if (twisterOptions > 1) {
-          hasVariations = true;
-        }
-      }
-
-      // Amazon Bullet Points (Refined to prevent duplication and distortion)
-      const amazonBullets: string[] = [];
-      const primaryBulletSelectors = [
-        '#feature-bullets ul li span.a-list-item',
-        '#featurebullets_feature_div ul li span.a-list-item',
-        '[data-feature-name="featurebullets"] ul li span.a-list-item',
-        '#productFactsDesktopExpander ul li span.a-list-item',
-        '.a-unordered-list.a-vertical li span.a-list-item'
-      ];
-
-      primaryBulletSelectors.forEach(s => {
-        $(s).each((_, el) => {
-          const text = $(el).text().trim();
-          if (text.length > 2 && 
-              !text.includes('See more photos') && 
-              !text.includes('Check details') && 
-              !text.includes('See more') &&
-              !amazonBullets.includes(text)) {
-            amazonBullets.push(text);
-          }
-        });
-      });
-
-      console.log(`Extracted ${amazonBullets.length} Amazon Bullets`);
-
-      const liveData = {
-        title: ($('#productTitle').text() || $('span[id="productTitle"]').text()).trim(),
-        description: amazonDesc,
-        bullets: amazonBullets,
-        price: priceDisplay,
-        listPrice: listPrice,
-        currency: "", // Removed currency validation
-        shipping: shippingDaysStr,
-        rawShipping: rawShippingTime || "N/A",
-        variations: hasVariations ? 1 : 0,
-        hasAPlus: hasAPlus,
-        images: uniqueImages
-      };
-
-      const auditResult = performAudit(masterData, liveData, 'amazon', domain);
-      res.json({ liveData, auditResult });
+      res.json({ liveData: liveDataRaw, auditResults });
     } catch (error: any) {
       console.error("Amazon Audit Error:", error);
-      res.status(500).json({ 
-        error: error.message || "An unexpected error occurred during Amazon audit",
-        details: error.stack,
-        name: error.name
-      });
+      res.status(500).json({ error: error.message });
     } finally {
       if (browser) await browser.close();
     }
@@ -569,7 +450,7 @@ async function startServer() {
         }
         
         browser = await chromium.launch(launchOptions);
-                  const userAgents = [
+        const userAgents = [
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
@@ -602,7 +483,7 @@ async function startServer() {
         { name: 'bol_p_incognito', value: 'true', domain: '.bol.com', path: '/' }
       ]);
 
-            const page = await context.newPage();
+      const page = await context.newPage();
       await page.addInitScript(() => { Object.defineProperty(navigator, 'webdriver', { get: () => false }); });
       
       // [NEW] Human-like Self-Search Strategy
@@ -629,10 +510,10 @@ async function startServer() {
       // Perform Search if we land on Home Page
       const currentUrl = page.url();
       if (currentUrl.endsWith('.com/nl/nl/') || currentUrl.endsWith('.com/') || currentUrl.includes('de-winkel-van-ons-allemaal')) {
-         console.log(`On home page. Performing active search for: ${asin}`);
+         console.log(`On home page. Performing active search for: ${ean}`);
          const searchInput = await page.waitForSelector('[data-test="search-input"]', { timeout: 10000 }).catch(() => null);
          if (searchInput) {
-            await searchInput.type(asin, { delay: 100 });
+            await searchInput.type(ean, { delay: 100 });
             await page.keyboard.press('Enter');
             await page.waitForTimeout(2000);
          } else {
