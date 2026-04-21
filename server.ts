@@ -293,8 +293,8 @@ async function startServer() {
         return {
           title,
           price,
-          images,
-          bullets,
+          images: images || [],
+          bullets: bullets || [],
           description,
           variations: document.querySelectorAll('.js_attribute_selector, [data-test="variant-selector"]').length > 0 ? 1 : 0,
           hasAPlus: document.querySelectorAll('.js_product_description img, .manufacturer-info img').length > 0 ? 1 : 0,
@@ -304,7 +304,7 @@ async function startServer() {
 
       const livedata = {
         ...liveDataRaw,
-        images: (globalThis as any).getUniqueImages(liveDataRaw.images)
+        images: (globalThis as any).getUniqueImages(liveDataRaw?.images || [])
       };
 
       const auditResult = (globalThis as any).performAudit(masterData, livedata, 'bol');
@@ -323,61 +323,55 @@ async function startServer() {
     const getAPlusText = (hasAPlus: boolean) => hasAPlus ? 'Available' : 'Not Available';
     const getVariationText = (exists: boolean) => exists ? 'Yes' : 'No';
     
-    const masterFirst = masterData.images?.[0] || "";
-    const liveFirst = auditResult.images?.live?.[0] || "";
+    // Extreme safety checks for missing audit data
+    if (!auditResult) auditResult = { title: {}, description: {}, price: {}, shipping: {}, bullets: [], images: { live: [] }, hasAPlus: {}, variations: {} };
+    if (!masterData) masterData = { images: [] };
+
+    const masterFirst = (masterData.images && masterData.images[0]) || "";
+    const liveFirst = (auditResult.images?.live && auditResult.images.live[0]) || "";
     const allLiveImages = (auditResult.images?.live || []).join(", ");
     
     const sharedData: any = {
-      "Identifier": identifier,
-      "SKU": identifier,
-      "Title match": getMatchText(auditResult.title.match),
-      "Title Match": getMatchText(auditResult.title.match),
-      "Description match": getMatchText(auditResult.description.match),
-      "Description Match": getMatchText(auditResult.description.match),
+      "Identifier": identifier || "N/A",
+      "SKU": identifier || "N/A",
+      "Title match": getMatchText(auditResult.title?.match),
+      "Title Match": getMatchText(auditResult.title?.match),
+      "Description match": getMatchText(auditResult.description?.match),
+      "Description Match": getMatchText(auditResult.description?.match),
       "Main Image Link": masterFirst,
       "Live Image Links": allLiveImages,
       "Main Image": masterFirst ? `=IMAGE("${masterFirst}")` : "",
       "Live Image": liveFirst ? `=IMAGE("${liveFirst}")` : "",
-      
-      // Specific requested mappings Target: "Main Live Image", "Image 1", "Live Image 1"
       "Main Live Image": liveFirst ? `=IMAGE("${liveFirst}")` : "",
       "Image 1": masterFirst, 
       "Live Image 1": liveFirst,
-      
-      "A+ Content": getAPlusText(auditResult.hasAPlus.live),
-      "A+": getAPlusText(auditResult.hasAPlus.live),
-      "Has A+": getAPlusText(auditResult.hasAPlus.live),
-      "Shipping Time": auditResult.shipping.live || "N/A",
-      "Shipping": auditResult.shipping.live || "N/A",
-      "Delivery Days": auditResult.shipping.live || "N/A",
-      "Price": auditResult.price.live || "N/A",
-      "Variation": getVariationText(auditResult.variations.live),
-      "Variations": getVariationText(auditResult.variations.live),
-      "Variation Match": getVariationText(auditResult.variations.live),
+      "A+ Content": getAPlusText(auditResult.hasAPlus?.live),
+      "A+": getAPlusText(auditResult.hasAPlus?.live),
+      "Has A+": getAPlusText(auditResult.hasAPlus?.live),
+      "Shipping Time": auditResult.shipping?.live || "N/A",
+      "Shipping": auditResult.shipping?.live || "N/A",
+      "Delivery Days": auditResult.shipping?.live || "N/A",
+      "Price": auditResult.price?.live || "N/A",
+      "Variation": getVariationText(auditResult.variations?.live),
+      "Variations": getVariationText(auditResult.variations?.live),
+      "Variation Match": getVariationText(auditResult.variations?.live),
       "Bullet Points match": auditResult.bullets ? getMatchText(auditResult.bullets.length > 0 && auditResult.bullets.every((b: any) => b.match)) : "N/A",
       "Bullet Points Match": auditResult.bullets ? getMatchText(auditResult.bullets.length > 0 && auditResult.bullets.every((b: any) => b.match)) : "N/A",
       "Bullets Match": auditResult.bullets ? getMatchText(auditResult.bullets.length > 0 && auditResult.bullets.every((b: any) => b.match)) : "N/A"
     };
 
-    // Bulk Image Columns Implementation
     const prefix = mode === 'amazon' ? 'Amazon' : 'Bol';
     const masterImgs = masterData.images || [];
     const liveImgs = auditResult.images?.live || [];
 
-    // Main image aliases
     sharedData[`${prefix} Main Image`] = masterImgs[0] ? `=IMAGE("${masterImgs[0]}")` : "";
     sharedData[`${prefix} Main Live Image`] = liveImgs[0] ? `=IMAGE("${liveImgs[0]}")` : "";
 
-    // Master Images 1-10
     for (let i = 1; i <= 10; i++) {
       const url = masterImgs[i-1] || "";
       sharedData[`${prefix} Master Image ${i}`] = url ? `=IMAGE("${url}")` : "";
-    }
-
-    // Live Images 1-10
-    for (let i = 1; i <= 10; i++) {
-      const url = liveImgs[i-1] || "";
-      sharedData[`${prefix} Live Image ${i}`] = url ? `=IMAGE("${url}")` : "";
+      const lUrl = liveImgs[i-1] || "";
+      sharedData[`${prefix} Live Image ${i}`] = lUrl ? `=IMAGE("${lUrl}")` : "";
     }
 
     if (mode === 'amazon') {
@@ -614,6 +608,7 @@ async function startServer() {
   }
 
   function getUniqueImages(urlList: string[]) {
+    if (!urlList || !Array.isArray(urlList)) return [];
     const idToUrlMap = new Map<string, string>();
     const finalImages: string[] = [];
     
@@ -690,27 +685,29 @@ async function startServer() {
     const results: any = {};
     
     // Title Comparison
-    const cleanMasterTitle = cleanText(master.title);
-    const cleanLiveTitle = cleanText(live.title);
+    const cleanMasterTitle = cleanText(master?.title || "");
+    const cleanLiveTitle = cleanText(live?.title || "");
     const titleSimilarity = stringSimilarity.compareTwoStrings(cleanMasterTitle, cleanLiveTitle);
     results.title = {
-      master: master.title,
-      live: live.title,
+      master: master?.title || "N/A",
+      live: live?.title || "N/A",
       similarity: titleSimilarity,
       match: cleanMasterTitle === cleanLiveTitle
     };
 
     // Description Comparison
-    const isImageDesc = live.description.startsWith('IMAGE:');
-    const isAPlusImages = live.description.startsWith('APLUS_IMAGES:');
-    const isAPlusData = live.description.startsWith('APLUS_DATA:');
-    const cleanMasterDesc = cleanText(master.description);
-    const cleanLiveDesc = (isImageDesc || isAPlusImages || isAPlusData) ? "" : cleanText(live.description);
+    const liveDesc = live?.description || "";
+    const masterDesc = master?.description || "";
+    const isImageDesc = liveDesc.startsWith('IMAGE:');
+    const isAPlusImages = liveDesc.startsWith('APLUS_IMAGES:');
+    const isAPlusData = liveDesc.startsWith('APLUS_DATA:');
+    const cleanMasterDesc = cleanText(masterDesc);
+    const cleanLiveDesc = (isImageDesc || isAPlusImages || isAPlusData) ? "" : cleanText(liveDesc);
     const descSimilarity = (isImageDesc || isAPlusImages || isAPlusData) ? 0.5 : stringSimilarity.compareTwoStrings(cleanMasterDesc, cleanLiveDesc);
     
     results.description = {
-      master: master.description,
-      live: live.description,
+      master: masterDesc,
+      live: liveDesc,
       similarity: descSimilarity,
       match: (isImageDesc || isAPlusImages || isAPlusData) ? false : (cleanMasterDesc === cleanLiveDesc),
       isImage: isImageDesc || isAPlusImages || isAPlusData,
@@ -718,16 +715,18 @@ async function startServer() {
       status: ((isAPlusImages || isAPlusData) && cleanMasterDesc) ? "Manual Check Required: A+ Content Live" : null
     };
 
-    // Currency Validation - REMOVED as per user request
+    // Currency Validation
     results.currency = {
       expected: "N/A",
-      actual: live.currency || "N/A",
+      actual: live?.currency || "N/A",
       match: true
     };
 
-    // Bullet Points Comparison (98% similarity threshold)
-    results.bullets = (master.bullets || []).map((mb: string, i: number) => {
-      const lb = live.bullets?.[i] || "";
+    // Bullet Points Comparison
+    const mBullets = master?.bullets || [];
+    const lBullets = live?.bullets || [];
+    results.bullets = mBullets.map((mb: string, i: number) => {
+      const lb = lBullets[i] || "";
       const cmb = cleanText(mb);
       const clb = cleanText(lb);
       const similarity = stringSimilarity.compareTwoStrings(cmb, clb);
@@ -740,38 +739,40 @@ async function startServer() {
     });
 
     results.hasAPlus = {
-      master: !!master.hasAPlus,
-      live: !!live.hasAPlus,
-      match: !!master.hasAPlus === !!live.hasAPlus
+      master: !!(master?.hasAPlus),
+      live: !!(live?.hasAPlus),
+      match: !!(master?.hasAPlus) === !!(live?.hasAPlus)
     };
 
     results.variations = {
-      master: !!master.variations,
-      live: !!live.variations,
-      match: !!master.variations === !!live.variations
+      master: !!(master?.variations),
+      live: !!(live?.variations),
+      match: !!(master?.variations) === !!(live?.variations)
     };
 
     results.price = {
-      master: master.price,
-      live: live.price,
-      match: master.price == live.price
+      master: master?.price || "N/A",
+      live: live?.price || "N/A",
+      match: (master?.price || "N/A") == (live?.price || "N/A")
     };
 
+    const mShip = master?.shipping || "";
+    const lShip = live?.shipping || "";
     results.shipping = {
-      master: master.shipping,
-      live: live.shipping,
-      similarity: stringSimilarity.compareTwoStrings(cleanText(master.shipping), cleanText(live.shipping)),
-      match: cleanText(master.shipping) === cleanText(live.shipping)
+      master: mShip,
+      live: lShip,
+      similarity: stringSimilarity.compareTwoStrings(cleanText(mShip), cleanText(lShip)),
+      match: cleanText(mShip) === cleanText(lShip)
     };
 
     // Image comparison results
-    const masterImages = master.images || [];
-    const liveImages = live.images || [];
+    const masterImages = master?.images || [];
+    const liveImages = live?.images || [];
     const masterFirst = masterImages[0] || "";
     const liveFirst = liveImages[0] || "";
     
-    // Simple match logic: compare first image filename or full URL
-    const getFilename = (url: string) => url.split('/').pop()?.split('?')[0] || "";
+    // Simple match logic
+    const getFilename = (url: string) => (url || "").split('/').pop()?.split('?')[0] || "";
     const isImageMatch = masterFirst && liveFirst && (masterFirst === liveFirst || getFilename(masterFirst) === getFilename(liveFirst));
 
     results.images = {
