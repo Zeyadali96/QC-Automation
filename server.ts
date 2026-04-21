@@ -582,6 +582,9 @@ async function startServer() {
           'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
           'Referer': 'https://www.google.com/',
+          'sec-ch-ua': '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
+          'sec-ch-ua-mobile': '?0',
+          'sec-ch-ua-platform': '"Windows"',
           'User-Agent': randomUserAgent
         }
       });
@@ -680,35 +683,34 @@ async function startServer() {
         }
       }
 
-      // 4. Wait for product content
-      console.log("Waiting for page load / network idle...");
-      await Promise.race([
-        page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => null),
-        page.waitForSelector('.pdp-header', { timeout: 20000 }).catch(() => null)
-      ]);
+      // 4. Resilient Wait & Scroll Strategy (2026 Update)
+      try {
+        console.log("Waiting for body...");
+        await page.waitForSelector('body', { timeout: 10000 });
 
-      // Handle delayed search-to-pdp redirects or sticky search pages
-      const currentUrl = page.url();
-      if (currentUrl.includes('/s/') || currentUrl.includes('zoekresultaten')) {
-        console.log("Still on search page, attempting one final product click...");
-        const finalTrySelector = 'a[href*="/p/"]:not([href*="javascript"]), [data-test="product-title"]';
-        const el = await page.waitForSelector(finalTrySelector, { timeout: 5000 }).catch(() => null);
-        if (el) {
-          const href = await el.getAttribute('href');
-          if (href) {
-            const productUrl = href.startsWith('http') ? href : `https://www.bol.com${href}`;
-            await page.goto(productUrl, { waitUntil: 'load', timeout: 30000 }).catch(() => null);
-          }
-        }
-      }
+        // Humanize: Scroll slightly to trigger lazy-load elements (React hydration)
+        console.log("Triggering scroll for React hydration...");
+        await page.mouse.wheel(0, 500);
+        await page.waitForTimeout(1000); 
+        await page.mouse.wheel(0, -200);
 
-      // Final PDP Wait
-      console.log("Ensuring .pdp-header is visible...");
-      await page.waitForSelector('.pdp-header', { state: 'visible', timeout: 30000 }).catch(async (err) => {
+        // Updated Selector Check for 2026 Header (most stable)
+        const headerSelector = '[data-test="title"], h1.page-title, .js_pdp_title, .pdp-header';
+        console.log("Ensuring PDP Header is visible...");
+        await page.waitForSelector(headerSelector, { 
+            state: 'visible', 
+            timeout: 15000 
+        });
+      } catch (error: any) {
+        // Diagnostic: Log content on failure to identify Akamai/CAPTCHA
         const title = await page.title();
-        console.error(`PDP Header timeout. Page Title: ${title}, URL: ${page.url()}`);
-        throw new Error(`Bol.com Timeout: Could not find product header (Current: ${title})`);
-      });
+        const html = await page.content();
+        console.error(`Bol.com Timeout Error details. Page Title: ${title}, URL: ${page.url()}`);
+        if (html.includes('akamai') || html.includes('Akamai')) {
+           throw new Error("Bol.com Blocked by Akamai. Try again with a different proxy region.");
+        }
+        throw new Error(`Bol.com Timeout: Could not find product header (Current: ${title}). See logs for HTML diagnostic.`);
+      }
 
       // Human-like delay after page load (3 seconds) to allow all JS to execute
       console.log("Waiting 3 seconds for JavaScript execution...");
@@ -806,11 +808,11 @@ async function startServer() {
           if (pooledText) description = pooledText;
         }
 
-        // 3. Price
+        // 3. Price (Prioritize data-test for 2026)
         let price = "N/A";
-        const promoEl = document.querySelector('#buyBlockSlot [class*="text-promo-text-high"]') || 
+        const promoEl = document.querySelector('[data-test="price"]') || 
                         document.querySelector('.promo-price') || 
-                        document.querySelector('[data-test="price"]') ||
+                        document.querySelector('#buyBlockSlot [class*="text-promo-text-high"]') || 
                         document.querySelector('.buy-block__price');
         if (promoEl) {
            price = (promoEl as any).innerText.replace(/\s+/g, '').replace('ظéش', '').trim().replace(',', '.');
@@ -836,12 +838,12 @@ async function startServer() {
         // 4. Shipping
         let shippingText = "N/A";
         // Look for "Uiterlijk [Date] in huis" or "Morgen in huis"
-        const deliveryPromise = document.querySelector('.js_delivery_info') || 
+        const deliveryPromise = document.querySelector('[data-test="delivery-highlight"]') || 
+                                document.querySelector('[data-test="delivery-promise"]') ||
+                                document.querySelector('.js_delivery_info') || 
                                 document.querySelector('.ui-delivery-info') || 
                                 document.querySelector('.delivery-promise') || 
-                                document.querySelector('[data-test="delivery-highlight"]') || 
                                 document.querySelector('.delivery-delivery-time') || 
-                                document.querySelector('[data-test="delivery-promise"]') ||
                                 document.querySelector('.buy-block__delivery-text');
                                 
         if (deliveryPromise) {
