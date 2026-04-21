@@ -76,7 +76,15 @@ async function startServer() {
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox']
       };
-      if (process.env.PROXY_SERVER) {
+      if (process.env.ANTIGRAVITY_API_KEY) {
+        let region = 'us';
+        if (domain.endsWith('.co.uk')) region = 'uk';
+        else if (domain.endsWith('.de')) region = 'de';
+        else if (domain.endsWith('.pl')) region = 'pl';
+        launchOptions.proxy = {
+          server: `http://${process.env.ANTIGRAVITY_API_KEY}:residential-${region}@proxy.antigravityai.com:8080`
+        };
+      } else if (process.env.PROXY_SERVER) {
         launchOptions.proxy = {
           server: process.env.PROXY_SERVER,
           username: process.env.PROXY_USERNAME,
@@ -84,10 +92,10 @@ async function startServer() {
         };
       }
       browser = await chromium.launch(launchOptions);
-            const userAgents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/122.0.0.0 Safari/537.36'
+                  const userAgents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
       ];
       const randomUserAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
       const context = await browser.newContext({
@@ -139,6 +147,7 @@ async function startServer() {
       // Navigate and wait for initial load
       try {
         await page.goto(url, { waitUntil: 'load', timeout: 60000 });
+        // Only trigger the extraction after networkidle (Playwright's equivalent of networkidle2)
         await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => null);
       } catch (e: any) {
         if (e.name === 'TimeoutError') {
@@ -148,9 +157,9 @@ async function startServer() {
         }
       }
       
-      // Ensure the product title is at least present
-      await page.waitForSelector('#ppd', { timeout: 15000 }).catch(() => {
-        console.warn("Product title not found within 15s, page might be slow or blocked.");
+      // Mandatory "Wait-Until" Logic: Ensure the product display is fully visible
+      await page.waitForSelector('#ppd', { state: 'visible', timeout: 15000 }).catch(() => {
+        console.warn("Product display (#ppd) not fully visible within 15s, proceeding anyway.");
       });
       
       // Check for CAPTCHA
@@ -216,10 +225,10 @@ async function startServer() {
 
       // Shipping Extraction (Target: Right-side Buybox and delivery elements)
       const deliverySelectors = [
-        '#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_ID',
-        '#delivery-message',
+        'div#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_ID',
         'span[data-amazon-delivery-date]',
-        '#deliveryBlockMessage',
+        'div#deliveryBlockMessage',
+        '#delivery-message',
         '#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE',
         '#mir-layout-DELIVERY_BLOCK',
         '#pfd-desktop-PRIMARY_DELIVERY_MESSAGE_LARGE',
@@ -317,7 +326,7 @@ async function startServer() {
       let listPrice = "N/A";
       
       // Primary selectors for core price display
-      const corePriceDiv = $('#corePriceDisplay_desktop_feature_div, #corePrice_feature_div, #apex_desktop_price_feature_div');
+      const corePriceDiv = $('span.a-offscreen, span#price_inside_buybox, div#corePrice_feature_div');
       if (corePriceDiv.length) {
         priceDisplay = corePriceDiv.find('span.a-offscreen').first().text().trim() || 
                        corePriceDiv.find('.a-price span.a-offscreen').first().text().trim() || 
@@ -532,10 +541,10 @@ async function startServer() {
         }
         
         browser = await chromium.launch(launchOptions);
-            const userAgents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/122.0.0.0 Safari/537.36'
+                  const userAgents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
       ];
       const randomUserAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
       const context = await browser.newContext({
@@ -659,33 +668,23 @@ async function startServer() {
         }
       }
 
-      // Ensure we are on a product page
-      await page.waitForSelector('.pdp-header, div#pdp_main_section, [data-test="title"]', { timeout: 30000 }).catch(() => {
-        console.warn("Product indicators not found, page might be slow or not a product page.");
-      });
-
       // Wait for network idle to ensure hydration
       await page.waitForLoadState('load', { timeout: 15000 }).catch(() => null);
-      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {
-        console.warn("Network idle timeout, proceeding with current state.");
-      });
+      await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => null);
+
+      // Ensure we are on a product page (Mandatory visibility wait)
+      await page.waitForSelector('.pdp-header', { state: 'visible', timeout: 30000 });
 
       // Human-like delay after page load (3 seconds) to allow all JS to execute
       console.log("Waiting 3 seconds for JavaScript execution...");
       await page.waitForTimeout(3000);
 
-      // Scroll to media container to trigger lazy loading
+      // Scroll 500px down and back up instantly to trigger lazy loading
       await page.evaluate(() => {
-        const media = document.querySelector('.js_product_media_items') || 
-                      document.querySelector('.pdp-images') || 
-                      document.querySelector('.buy-block');
-        if (media) {
-          media.scrollIntoView();
-          // Scroll a bit more to ensure thumbnails are triggered
-          window.scrollBy(0, 300);
-        }
+        window.scrollBy(0, 500);
+        setTimeout(() => window.scrollBy(0, -500), 100);
       });
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(1000);
 
       // Wait for description and media containers specifically (critical for JS-rendered content)
       await page.waitForSelector('#pdp_description, .js_product_description, div.js_product_media_items, .pdp-images, [data-test="product-main-image"]', { timeout: 15000 }).catch(() => null);
@@ -725,10 +724,10 @@ async function startServer() {
 
         if (!description || description.length < 50) {
           const descSelectors = [
-            '#pdp_description',
+            'div[data-test="description"]',
             'div.js_product_description',
+            '#pdp_description',
             'section.product-description',
-            '[data-test="description"]',
             '[data-test="product-description"]',
             '.js_product_description',
             '.product-description',
@@ -864,6 +863,9 @@ async function startServer() {
         
         // 6. Variations & A+
         const hasVariations = !!(
+          document.querySelector('.js_attribute_selector .js_attribute_label') ||
+          document.querySelector('.js_attribute_selector .active') ||
+          document.querySelector('.js_attribute_selector [selected]') ||
           document.querySelector('.js_attribute_selector') ||
           document.querySelector('[data-test="variant-selector"]') || 
           document.querySelector('.variant-selector') || 
@@ -1338,23 +1340,9 @@ async function startServer() {
 
   function cleanText(text: string): string {
     if (!text) return "";
-    // 1. Strip HTML tags
-    let cleaned = text.replace(/<[^>]*>?/gm, '');
-    
-    // 2. Remove raw URLs
-    cleaned = cleaned.replace(/https?:\/\/[^\s]+\.(jpg|jpeg|png|gif|webp|svg)/gi, '');
-    
-    // 3. Normalize diacritics (treat ├س as e, etc.)
-    cleaned = cleaned.normalize('NFD').replace(/[\u0300-\u036f]/g, "");
-    
-    // 4. Whitespace Normalization (replace non-breaking spaces etc with standard space)
-    cleaned = cleaned.replace(/[\u00A0\u1680\u180E\u2000-\u200B\u202F\u205F\u3000\uFEFF]/g, ' ');
-    
-    // 5. Aggressive Alphanumeric filter (Removes symbols like ظت, ┬«, ┬ر, bullets, punctuation)
-    cleaned = cleaned.replace(/[^a-zA-Z0-9\s]/g, '');
-    
-    // 6. Normalize casing and multiple spaces
-    return cleaned.toLowerCase().trim().replace(/\s+/g, ' ');
+    let cleaned = String(text);
+    // Strip everything that isn't a letter or number for exact comparison (Google Sheets Fix)
+    return cleaned.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
   }
 
   function getUniqueImages(urlList: string[]) {
@@ -1441,7 +1429,7 @@ async function startServer() {
       master: master.title,
       live: live.title,
       similarity: titleSimilarity,
-      match: titleSimilarity >= 0.98
+      match: cleanMasterTitle === cleanLiveTitle
     };
 
     // Description Comparison
@@ -1456,7 +1444,7 @@ async function startServer() {
       master: master.description,
       live: live.description,
       similarity: descSimilarity,
-      match: (isImageDesc || isAPlusImages || isAPlusData) ? false : (descSimilarity >= 0.98),
+      match: (isImageDesc || isAPlusImages || isAPlusData) ? false : (cleanMasterDesc === cleanLiveDesc),
       isImage: isImageDesc || isAPlusImages || isAPlusData,
       isAPlus: isAPlusImages || isAPlusData,
       status: ((isAPlusImages || isAPlusData) && cleanMasterDesc) ? "Manual Check Required: A+ Content Live" : null
@@ -1479,7 +1467,7 @@ async function startServer() {
         master: mb,
         live: lb,
         similarity: similarity,
-        match: similarity >= 0.98
+        match: cmb === clb
       };
     });
 
@@ -1505,7 +1493,7 @@ async function startServer() {
       master: master.shipping,
       live: live.shipping,
       similarity: stringSimilarity.compareTwoStrings(cleanText(master.shipping), cleanText(live.shipping)),
-      match: stringSimilarity.compareTwoStrings(cleanText(master.shipping), cleanText(live.shipping)) >= 0.98
+      match: cleanText(master.shipping) === cleanText(live.shipping)
     };
 
     // Image comparison results
