@@ -166,18 +166,19 @@ export default function App() {
     csvRows.push(headers.join(','));
 
     Object.entries(auditResults).forEach(([idx, res]: any) => {
-      const row = data[parseInt(idx)];
-      const id = mode === 'amazon' ? row.ASIN : row.EAN;
-      const bulletMatch = res.auditResult.bullets.filter((b: any) => b.match).length / (res.auditResult.bullets.length || 1);
+      const row = data[parseInt(idx)] || {};
+      const id = mode === 'amazon' ? (row.ASIN || 'N/A') : (row.EAN || 'N/A');
+      const bullets = res.auditResult?.bullets || [];
+      const bulletMatch = bullets.length > 0 ? bullets.filter((b: any) => b.match).length / bullets.length : 0;
       
       const line = [
         parseInt(idx) + 1,
         id,
-        res.auditResult.title.match ? 'YES' : 'NO',
-        res.auditResult.description.match ? 'YES' : 'NO',
+        res.auditResult?.title?.match ? 'YES' : 'NO',
+        res.auditResult?.description?.match ? 'YES' : 'NO',
         Math.round(bulletMatch * 100) + '%',
-        res.auditResult.price.live,
-        res.auditResult.shipping.live
+        res.auditResult?.price?.live || 'N/A',
+        res.auditResult?.shipping?.live || 'N/A'
       ];
       csvRows.push(line.join(','));
     });
@@ -458,12 +459,12 @@ export default function App() {
                     <React.Fragment key={idx}>
                       <tr className={`hover:bg-slate-50 transition-colors ${selectedRow === idx ? 'bg-indigo-50/30' : ''}`}>
                         <td className="px-6 py-4">
-                          <div className="font-medium text-slate-900 truncate max-w-xs">{row.Title}</div>
+                          <div className="font-medium text-slate-900 truncate max-w-xs">{row.Title || 'No Title'}</div>
                           <div className="flex items-center gap-2 mt-0.5">
-                            <span className="text-xs text-slate-500">Master: {row.Price}</span>
+                            <span className="text-xs text-slate-500">Master: {row.Price || 'N/A'}</span>
                             {auditResults[idx] && (
-                              <span className={`text-xs font-bold ${auditResults[idx].auditResult.price.match ? 'text-green-600' : 'text-red-600'}`}>
-                                Live: {auditResults[idx].liveData.price || 'N/A'}
+                              <span className={`text-xs font-bold ${auditResults[idx]?.auditResult?.price?.match ? 'text-green-600' : 'text-red-600'}`}>
+                                Live: {auditResults[idx]?.liveData?.price || 'N/A'}
                               </span>
                             )}
                           </div>
@@ -479,38 +480,38 @@ export default function App() {
                             </div>
                           ) : auditResults[idx] ? (
                             <div className="flex flex-col items-center gap-2">
-                              {mode === 'bol' && auditResults[idx].liveData.images && auditResults[idx].liveData.images.length > 0 && (
+                              {mode === 'bol' && auditResults[idx]?.liveData?.images && auditResults[idx]?.liveData?.images?.length > 0 && (
                                 <div className="flex items-center justify-center gap-1 overflow-x-auto max-w-[180px] pb-1 scrollbar-hide">
-                                  {auditResults[idx].liveData.images.slice(0, 5).map((img: string, i: number) => (
+                                  {auditResults[idx]?.liveData?.images?.slice(0, 5).map((img: string, i: number) => (
                                     <div key={i} className="relative group">
                                       <img 
                                         src={getProxiedUrl(img)} 
-                                        className={`w-10 h-10 min-w-[40px] object-contain bg-white rounded border ${i === 0 && !auditResults[idx].auditResult.images.match ? 'border-red-500 ring-1 ring-red-500' : 'border-slate-200'}`} 
+                                        className={`w-10 h-10 min-w-[40px] object-contain bg-white rounded border ${i === 0 && !auditResults[idx]?.auditResult?.images?.match ? 'border-red-500 ring-1 ring-red-500' : 'border-slate-200'}`} 
                                         alt=""
                                         referrerPolicy="no-referrer"
                                       />
-                                      {i === 0 && !auditResults[idx].auditResult.images.match && (
+                                      {i === 0 && auditResults[idx]?.auditResult?.images && !auditResults[idx]?.auditResult?.images?.match && (
                                         <div className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5 shadow-sm">
                                           <X className="w-2 h-2" />
                                         </div>
                                       )}
                                     </div>
                                   ))}
-                                  {auditResults[idx].liveData.images.length > 5 && (
+                                  {(auditResults[idx]?.liveData?.images?.length || 0) > 5 && (
                                     <button 
                                       onClick={() => setGalleryModal({ 
                                         images: auditResults[idx].liveData.images, 
-                                        title: auditResults[idx].liveData.title 
+                                        title: auditResults[idx].liveData.title || (mode === 'amazon' ? row.ASIN : row.EAN)
                                       })}
                                       className="w-10 h-10 min-w-[40px] flex items-center justify-center bg-slate-100 rounded border border-slate-200 text-[10px] font-bold text-slate-500 hover:bg-indigo-50 hover:text-indigo-600 transition-colors"
                                     >
-                                      +{auditResults[idx].liveData.images.length - 5}
+                                      +{(auditResults[idx]?.liveData?.images?.length || 0) - 5}
                                     </button>
                                   )}
                                 </div>
                               )}
                               <div className="flex items-center justify-center gap-1">
-                                {Object.values(auditResults[idx].auditResult).every((v: any) => v.match || (v.similarity && v.similarity > 0.9)) ? (
+                                {Object.values(auditResults[idx]?.auditResult || {}).every((v: any) => !v || v.match || (v.similarity && v.similarity > 0.9)) ? (
                                   <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
                                     <CheckCircle2 className="w-3 h-3" /> Pass
                                   </span>

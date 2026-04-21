@@ -145,8 +145,8 @@ async function startServer() {
       const shippingText = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_ID, #deliveryBlockMessage, #delivery-message').first().text().trim();
       livedata.shipping = shippingText || "N/A";
 
-      const auditResults = performAudit(masterData, livedata, 'amazon', domain);
-      res.json({ liveData: livedata, auditResults });
+      const auditResult = performAudit(masterData, livedata, 'amazon', domain);
+      res.json({ liveData: livedata, auditResult });
     } catch (error: any) {
       console.error("Amazon Audit Error:", error);
       res.status(500).json({ error: error.message });
@@ -158,109 +158,111 @@ async function startServer() {
   // 3. Audit Bol.com
   app.post("/api/audit/bol", async (req, res) => {
     let browser: any;
-    let retryCount = 0;
-    const maxRetries = 2;
-
-    const executeAudit = async (): Promise<any> => {
-      try {
-        const { ean, masterData } = req.body;
-        const searchUrl = `https://www.bol.com/nl/nl/s/?searchtext=${ean}`;
-        
-        console.log(`Starting Bol Audit for EAN: ${ean} (Attempt ${retryCount + 1})`);
-        
-        const launchOptions: any = { 
-          headless: true,
-          args: [
-            '--no-sandbox', 
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-gpu'
-          ]
+    try {
+      const { ean, masterData } = req.body;
+      const searchUrl = `https://www.bol.com/nl/nl/s/?searchtext=${ean}`;
+      
+      const launchOptions: any = { 
+        headless: true,
+        args: [
+          '--no-sandbox', 
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--disable-features=IsolateOrigins,site-per-process'
+        ]
+      };
+      
+      if (process.env.ANTIGRAVITY_API_KEY) {
+        launchOptions.proxy = {
+          server: `http://proxy.antigravityai.com:8080`,
+          username: process.env.ANTIGRAVITY_API_KEY,
+          password: 'residential-nl'
         };
-        
-        if (process.env.ANTIGRAVITY_API_KEY) {
-          launchOptions.proxy = {
-            server: `http://proxy.antigravityai.com:8080`,
-            username: process.env.ANTIGRAVITY_API_KEY,
-            password: 'residential-nl'
-          };
+      }
+      
+      browser = await chromium.launch(launchOptions);
+      const context = await browser.newContext({
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        viewport: { width: 1920, height: 1080 },
+        extraHTTPHeaders: {
+          'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
         }
-        
-        browser = await chromium.launch(launchOptions);
-        const context = await browser.newContext({
-          userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-          viewport: { width: 1920, height: 1080 }
-        });
-        const page = await context.newPage();
-        
-        await page.goto(searchUrl, { waitUntil: 'load', timeout: 60000 });
-        await page.waitForTimeout(2000);
+      });
+      const page = await context.newPage();
+      
+      console.log(`Auditing Bol: ${searchUrl}`);
+      // Navigate to home page first to get cookies
+      await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'load', timeout: 30000 }).catch(() => null);
+      await page.waitForTimeout(1000);
+      
+      // Click consent if present
+      await page.evaluate(() => {
+        const btn = Array.from(document.querySelectorAll('button')).find(b => b.innerText.toLowerCase().includes('accepteer') || b.id.includes('accept'));
+        if (btn) (btn as any).click();
+      }).catch(() => null);
+      
+      // Search
+      await page.goto(searchUrl, { waitUntil: 'load', timeout: 60000 });
+      await page.waitForTimeout(2000);
 
-        // Check if on search page or product page
-        const isSearchPage = await page.evaluate(() => !!document.querySelector('.product-list, [data-test="product-list"]'));
-        if (isSearchPage) {
-          const link = await page.waitForSelector('a[href*="/p/"]', { timeout: 10000 }).catch(() => null);
-          if (link) {
-            const href = await link.getAttribute('href');
-            if (href) {
-                await page.goto(href.startsWith('http') ? href : `https://www.bol.com${href}`, { waitUntil: 'load' });
-            }
+      // Check if on search page or product page
+      const isSearchPage = await page.evaluate(() => !!document.querySelector('.product-list, [data-test="product-list"]'));
+      if (isSearchPage) {
+        const link = await page.waitForSelector('a[href*="/p/"]', { timeout: 10000 }).catch(() => null);
+        if (link) {
+          const href = await link.getAttribute('href');
+          if (href) {
+            await page.goto(href.startsWith('http') ? href : `https://www.bol.com${href}`, { waitUntil: 'load' });
           }
         }
+      }
 
-        await page.waitForTimeout(3000);
-        // Scroll to trigger hydration
-        await page.evaluate(() => window.scrollBy(0, 500));
-        await page.waitForTimeout(1000);
+      await page.waitForTimeout(3000);
+      await page.evaluate(() => window.scrollBy(0, 500));
+      await page.waitForTimeout(1000);
 
-        const liveDataRaw = await page.evaluate(() => {
-          const title = (document.querySelector('[data-test="title"]') as any)?.innerText.trim() || document.title;
-          const priceStr = (document.querySelector('[data-test="price"]') as any)?.innerText.replace(/\s+/g, '') || "N/A";
-          const priceMatch = priceStr.match(/(\d+),(\d{2})/) || priceStr.match(/(\d+)/);
-          const price = priceMatch ? (priceMatch[2] ? `${priceMatch[1]}.${priceMatch[2]}` : `${priceMatch[1]}.00`) : "N/A";
+      const liveDataRaw = await page.evaluate(() => {
+        const getT = (s: string) => (document.querySelector(s) as any)?.innerText.trim() || "";
+        const title = getT('[data-test="title"]') || getT('h1.page-title') || document.title;
+        const priceStr = getT('[data-test="price"]') || getT('.promo-price') || "";
+        const priceMatch = priceStr.match(/(\d+),(\d{2})/) || priceStr.match(/(\d+)/);
+        const price = priceMatch ? (priceMatch[2] ? `${priceMatch[1]}.${priceMatch[2]}` : `${priceMatch[1]}.00`) : "N/A";
 
-          const images: string[] = [];
-          document.querySelectorAll('img[src*="media.s-bol.com"]').forEach(img => {
-            const src = (img as any).src;
-            if (src && !images.includes(src)) images.push(src);
-          });
-
-          const description = (document.querySelector('[data-test="description"]') as any)?.innerText.trim() || "";
-          const bullets = Array.from(document.querySelectorAll('[data-test="product-features"] li')).map(li => (li as any).innerText.trim());
-
-          return {
-            title,
-            price,
-            images,
-            description,
-            bullets,
-            variations: document.querySelectorAll('.js_attribute_selector').length > 0 ? 1 : 0,
-            hasAPlus: document.querySelectorAll('.js_product_description img').length > 0 ? 1 : 0,
-            shipping: (document.querySelector('[data-test="delivery-highlight"]') as any)?.innerText.trim() || "N/A"
-          };
+        const images: string[] = [];
+        document.querySelectorAll('img[src*="media.s-bol.com"]').forEach(img => {
+          const src = (img as any).src;
+          if (src && !images.includes(src)) images.push(src);
         });
 
-        const livedata = {
-          ...liveDataRaw,
-          images: getUniqueImages(liveDataRaw.images)
+        const bullets: string[] = [];
+        document.querySelectorAll('[data-test="product-features"] li, .product-features li').forEach(li => {
+          bullets.push((li as any).innerText.trim());
+        });
+
+        const description = getT('[data-test="description"]') || getT('.js_product_description') || "";
+
+        return {
+          title,
+          price,
+          images,
+          bullets,
+          description,
+          variations: document.querySelectorAll('.js_attribute_selector, [data-test="variant-selector"]').length > 0 ? 1 : 0,
+          hasAPlus: document.querySelectorAll('.js_product_description img, .manufacturer-info img').length > 0 ? 1 : 0,
+          shipping: getT('[data-test="delivery-highlight"]') || getT('.js_delivery_info') || "N/A"
         };
+      });
 
-        const auditResult = performAudit(masterData, livedata, 'bol');
-        res.json({ liveData: livedata, auditResult });
+      const livedata = {
+        ...liveDataRaw,
+        images: getUniqueImages(liveDataRaw.images)
+      };
 
-      } catch (error: any) {
-        if (retryCount < maxRetries) {
-            retryCount++;
-            console.log(`Bol Audit Retrying... ${retryCount}`);
-            if (browser) await browser.close();
-            return executeAudit();
-        }
-        throw error;
-      }
-    };
+      const auditResult = performAudit(masterData, livedata, 'bol');
+      res.json({ liveData: livedata, auditResult });
 
-    try {
-      await executeAudit();
     } catch (error: any) {
       console.error("Bol Audit Fatal Error:", error);
       res.status(500).json({ error: error.message });
