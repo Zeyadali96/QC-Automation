@@ -254,7 +254,10 @@ async function startServer() {
 
   // Standard Vite setup
   if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
+    const vite = await createViteServer({ 
+      server: { middlewareMode: true, allowedHosts: true }, 
+      appType: "spa" 
+    });
     app.use(vite.middlewares);
   } else {
     app.use(express.static(path.join(process.cwd(), 'dist')));
