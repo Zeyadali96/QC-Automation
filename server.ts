@@ -605,7 +605,7 @@ async function startServer() {
       // Navigate to search results
       console.log(`Navigating to: ${searchUrl}`);
       try {
-        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await page.goto(searchUrl, { waitUntil: 'load', timeout: 60000 });
       } catch (e: any) {
         if (e.name === 'TimeoutError') {
           console.warn("Bol search navigation timed out, attempting to proceed...");
@@ -614,42 +614,50 @@ async function startServer() {
         }
       }
 
-      // Handle Cookie Consent Wall (even if cookies were set, Bol sometimes forces it)
-      const consentButton = 'button#js-first-screen-accept-all, [data-test="consent-modal-confirm-btn"], #consent_wall_confirm';
-      const hasConsent = await page.waitForSelector(consentButton, { timeout: 5000 }).catch(() => null);
-      if (hasConsent) {
-        console.log("Cookie consent wall detected, clicking Accept...");
-        await hasConsent.click();
-        await page.waitForTimeout(1000);
-      }
+      // 1. Handle Cookie Consent Wall (More aggressive)
+      await page.evaluate(() => {
+        const acceptButton = Array.from(document.querySelectorAll('button')).find(b => 
+          b.id.includes('accept') || 
+          b.innerText.toLowerCase().includes('accepteer') || 
+          b.innerText.toLowerCase().includes('accept') ||
+          b.getAttribute('data-test') === 'consent-modal-confirm-btn'
+        );
+        if (acceptButton) (acceptButton as any).click();
+      }).catch(() => null);
+      await page.waitForTimeout(2000);
       
-      // Check for CAPTCHA or blocking (including IP block message)
+      // 2. Handle Title "bol" or loading states
+      let currentTitle = await page.title();
+      if (currentTitle.toLowerCase() === 'bol' || currentTitle.toLowerCase() === 'bol.com') {
+        console.log("Detected generic 'bol' title, waiting for redirect or content...");
+        await page.waitForTimeout(5000);
+        currentTitle = await page.title();
+      }
+
+      // Check for CAPTCHA or blocking
       const isBlocked = await page.evaluate(function() {
         // @ts-ignore
         if (typeof __name === 'undefined') { (window as any).__name = (t: any, v: any) => t; }
         const text = document.body.innerText;
-        const title = document.title;
-        return title.includes('Robot Check') || 
+        const title = document.title.toLowerCase();
+        return title.includes('robot') || 
                text.includes('Ben je een robot?') ||
                text.includes('rustig aan speed racer') ||
                text.includes('Je gaat iets te snel') ||
                text.includes('IP adres is geblokkeerd') ||
                text.includes('IP address is blocked') ||
-               // If it's just the home page description, it might be a silent redirect
-               (title === 'bol.com | De winkel van ons allemaal' && !text.includes('zoekresultaten') && !text.includes('artikel'));
+               // Detect landing on homepage instead of search/product
+               (title.includes('de winkel van ons allemaal') && !text.includes('zoekresultaten') && !text.includes('artikel'));
       });
 
       if (isBlocked) {
         const title = await page.title();
-        if (title === 'bol.com | De winkel van ons allemaal') {
-          throw new Error("Bol.com redirected to homepage (Bot Detection). Try again in a few minutes.");
-        }
-        throw new Error(`Bol.com blocked the request (Title: ${title}). Please wait or check proxy.`);
+        throw new Error(`Bol.com blocked the request or redirected to home (Title: ${title})`);
       }
 
       // Check if we are on a search page or product page
       let pageTitle = await page.title();
-      console.log(`Page Title after consent/wait: ${pageTitle}`);
+      console.log(`Page Title after handling: ${pageTitle}`);
       
       const isSearchPage = pageTitle.includes('Alle artikelen') || 
                            pageTitle.includes('Zoekresultaten') || 
