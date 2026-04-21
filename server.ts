@@ -605,16 +605,13 @@ async function startServer() {
             const page = await context.newPage();
       await page.addInitScript(() => { Object.defineProperty(navigator, 'webdriver', { get: () => false }); });
       
-      // Navigate to search results
-      console.log(`Navigating to: ${searchUrl}`);
+      // [NEW] Human-like Self-Search Strategy
+      console.log(`Bypassing deep-links: Navigating to Bol home page first...`);
       try {
-        await page.goto(searchUrl, { waitUntil: 'load', timeout: 60000 });
-      } catch (e: any) {
-        if (e.name === 'TimeoutError') {
-          console.warn("Bol search navigation timed out, attempting to proceed...");
-        } else {
-          throw e;
-        }
+        await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'load', timeout: 30000 });
+      } catch (e) {
+        console.warn("Home page load timed out or failed, attempting to proceed to search directly...");
+        await page.goto(searchUrl, { waitUntil: 'load', timeout: 45000 }).catch(() => null);
       }
 
       // 1. Handle Cookie Consent Wall (More aggressive)
@@ -627,12 +624,27 @@ async function startServer() {
         );
         if (acceptButton) (acceptButton as any).click();
       }).catch(() => null);
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(1000);
+
+      // Perform Search if we land on Home Page
+      const currentUrl = page.url();
+      if (currentUrl.endsWith('.com/nl/nl/') || currentUrl.endsWith('.com/') || currentUrl.includes('de-winkel-van-ons-allemaal')) {
+         console.log(`On home page. Performing active search for: ${asin}`);
+         const searchInput = await page.waitForSelector('[data-test="search-input"]', { timeout: 10000 }).catch(() => null);
+         if (searchInput) {
+            await searchInput.type(asin, { delay: 100 });
+            await page.keyboard.press('Enter');
+            await page.waitForTimeout(2000);
+         } else {
+            console.log("Search input not found, navigating to search URL directly...");
+            await page.goto(searchUrl, { waitUntil: 'load', timeout: 30000 }).catch(() => null);
+         }
+      }
       
       // 2. Handle Title "bol" or loading states
       let currentTitle = await page.title();
-      if (currentTitle.toLowerCase() === 'bol' || currentTitle.toLowerCase() === 'bol.com') {
-        console.log("Detected generic 'bol' title, waiting for redirect or content...");
+      if (currentTitle.toLowerCase() === 'bol' || currentTitle.toLowerCase() === 'bol.com' || currentTitle === '') {
+        console.log("Detected generic 'bol' title, waiting for content/redirect...");
         await page.waitForTimeout(5000);
         currentTitle = await page.title();
       }
@@ -644,18 +656,17 @@ async function startServer() {
         const text = document.body.innerText;
         const title = document.title.toLowerCase();
         return title.includes('robot') || 
+               title.includes('captcha') ||
                text.includes('Ben je een robot?') ||
                text.includes('rustig aan speed racer') ||
                text.includes('Je gaat iets te snel') ||
                text.includes('IP adres is geblokkeerd') ||
-               text.includes('IP address is blocked') ||
-               // Detect landing on homepage instead of search/product
-               (title.includes('de winkel van ons allemaal') && !text.includes('zoekresultaten') && !text.includes('artikel'));
+               text.includes('IP address is blocked');
       });
 
       if (isBlocked) {
         const title = await page.title();
-        throw new Error(`Bol.com blocked the request or redirected to home (Title: ${title})`);
+        throw new Error(`Bol.com blocked the request or redirect (Title: ${title})`);
       }
 
       // Check if we are on a search page or product page
