@@ -524,14 +524,39 @@ async function startServer() {
       }
       
       browser = await chromium.launch(launchOptions);
+      
+      // Rotate user agents
+      const userAgents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+      ];
+      const selectedUA = userAgents[Math.floor(Math.random() * userAgents.length)];
+      
+      // Randomize viewport slightly to avoid fingerprinting
+      const viewportWidth = 1920 + Math.floor(Math.random() * 100) - 50;
+      const viewportHeight = 1080 + Math.floor(Math.random() * 100) - 50;
+      
       const context = await browser.newContext({
         incognito: true,
-        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        viewport: { width: 1920, height: 1080 },
+        userAgent: selectedUA,
+        viewport: { width: viewportWidth, height: viewportHeight },
         extraHTTPHeaders: {
           'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-          'Referer': 'https://www.google.com/'
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Cache-Control': 'max-age=0',
+          'Referer': 'https://www.google.com/',
+          'Sec-Fetch-Dest': 'document',
+          'Sec-Fetch-Mode': 'navigate',
+          'Sec-Fetch-Site': 'none',
+          'Sec-Fetch-User': '?1',
+          'Sec-Ch-Ua': '"Not A(Brand";v="99", "Google Chrome";v="122", "Chromium";v="122"',
+          'Sec-Ch-Ua-Mobile': '?0',
+          'Sec-Ch-Ua-Platform': '"Windows"',
+          'Upgrade-Insecure-Requests': '1'
         }
       });
 
@@ -554,14 +579,34 @@ async function startServer() {
         }
       });
       
-      // Navigate to search results with retries
+      // Inject stealth scripts before navigation
+      await page.evaluateOnNewDocument(() => {
+        // @ts-ignore
+        Object.defineProperty(navigator, 'webdriver', {
+          get: () => undefined,
+        });
+        // @ts-ignore
+        Object.defineProperty(navigator, 'plugins', {
+          get: () => [1, 2, 3, 4, 5],
+        });
+        // @ts-ignore
+        Object.defineProperty(navigator, 'languages', {
+          get: () => ['nl-NL', 'nl', 'en-US', 'en'],
+        });
+      });
+      
+      // Navigate to search results with retries and intelligent delays
       console.log(`Navigating to: ${searchUrl}`);
       let navigationSuccess = false;
       let lastError: any;
       
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-          await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+          // Add random delay before each navigation attempt
+          const preDelay = Math.random() * 3000 + 2000;
+          await page.waitForTimeout(preDelay);
+          
+          await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 50000 });
           navigationSuccess = true;
           console.log(`Navigation successful on attempt ${attempt}`);
           break;
@@ -569,7 +614,10 @@ async function startServer() {
           lastError = e;
           console.warn(`Navigation attempt ${attempt} failed: ${e.message}`);
           if (attempt < 3) {
-            await page.waitForTimeout(2000 + attempt * 1000);
+            // Exponential backoff: 5s, 10s, 15s
+            const backoffDelay = 5000 * attempt;
+            console.log(`Waiting ${backoffDelay}ms before retry...`);
+            await page.waitForTimeout(backoffDelay);
           }
         }
       }
@@ -578,30 +626,54 @@ async function startServer() {
         throw new Error(`Failed to navigate to BOL after 3 attempts: ${lastError?.message}`);
       }
       
+      // Add longer random delay after navigation to avoid rate limiting
+      await page.waitForTimeout(Math.random() * 3000 + 2000);
+      
       // Check for CAPTCHA or blocking
-      const isBlocked = await page.evaluate(function() {
+      const blockStatus = await page.evaluate(function() {
         // @ts-ignore
         if (typeof __name === 'undefined') { (window as any).__name = (t: any, v: any) => t; }
-        const text = document.body.innerText;
-        const html = document.documentElement.innerHTML;
-        return document.title.includes('Robot Check') || 
-               document.title.includes('Access Denied') ||
-               document.title.includes('Blocked') ||
-               text.includes('Type the characters you see in this image') ||
-               text.includes('To discuss automated access to Amazon data please contact') ||
-               text.includes('Ben je een robot?') ||
-               text.includes('rustig aan speed racer') ||
-               text.includes('Je gaat iets te snel') ||
-               text.includes('geblokkeerd') ||
-               text.includes('Blocked') ||
-               text.includes('Access Denied') ||
-               text.includes('IP adres') ||
-               html.includes('429') ||
-               html.includes('403');
+        const text = document.body.innerText.toLowerCase();
+        const html = document.documentElement.innerHTML.toLowerCase();
+        const title = document.title.toLowerCase();
+        
+        // Check for explicit blocking indicators
+        const hasBlockTitle = title.includes('robot check') || 
+                              title.includes('access denied') ||
+                              title.includes('blocked');
+        
+        const hasBlockText = text.includes('type the characters you see') ||
+                             text.includes('ben je een robot?') ||
+                             text.includes('rustig aan speed racer') ||
+                             text.includes('je gaat iets te snel') ||
+                             text.includes('geblokkeerd');
+        
+        const hasBlockHtml = html.includes('429') || html.includes('403');
+        
+        // Check if we have actual product content
+        const hasContent = text.length > 500 && 
+                          (text.includes('€') || 
+                           text.includes('prijs') || 
+                           text.includes('price') ||
+                           document.querySelector('h1, [data-test="title"]'));
+        
+        return {
+          isBlocked: (hasBlockTitle || hasBlockText || hasBlockHtml) && !hasContent,
+          hasContent: hasContent,
+          textLength: text.length
+        };
       });
 
-      if (isBlocked) {
-        throw new Error("Bol.com blocked the request (IP blocked/Rate limited/Speed Racer detected). Try using a proxy or wait a few minutes.");
+      console.log(`Block Status: ${JSON.stringify(blockStatus)}`);
+
+      // Only throw error if truly blocked AND we don't have content
+      if (blockStatus.isBlocked && !blockStatus.hasContent) {
+        throw new Error("Bol.com appears to be blocking the request. Content not loaded.");
+      }
+      
+      // If we have some concerns but also have content, proceed with warning
+      if (blockStatus.hasContent) {
+        console.log("Warning: Some block indicators detected but content was loaded. Proceeding with extraction...");
       }
 
       // Check if we are on a search page or product page
@@ -667,14 +739,14 @@ async function startServer() {
         console.warn("Product indicators not found, page might be slow or not a product page.");
       });
 
-      // Wait for network idle to ensure hydration
-      await page.waitForLoadState('load', { timeout: 20000 }).catch(() => null);
-      await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {
+      // Wait for network idle to ensure hydration - with longer timeout for BOL
+      await page.waitForLoadState('load', { timeout: 30000 }).catch(() => null);
+      await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {
         console.warn("Network idle timeout, proceeding with current state.");
       });
 
       // Extra wait for dynamic content (variations, etc.)
-      await page.waitForTimeout(3000);
+      await page.waitForTimeout(5000);
 
       // Check if page loaded properly
       const pageLoaded = await page.evaluate(() => {
@@ -684,6 +756,9 @@ async function startServer() {
       if (!pageLoaded) {
         throw new Error("Page content did not load properly. Possible block or network issue.");
       }
+
+      // Add another delay to be extra safe before scrolling
+      await page.waitForTimeout(2000);
 
       // Scroll to media container to trigger lazy loading
       await page.evaluate(() => {
