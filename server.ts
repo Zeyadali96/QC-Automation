@@ -647,13 +647,16 @@ async function startServer() {
         if (typeof __name === 'undefined') { (window as any).__name = (t: any, v: any) => t; }
         
         // 1. Title
-        const elTitle = document.querySelector('[data-test="title"]') || document.querySelector('h1.page-title') || document.querySelector('h1');
-        const title = elTitle ? (elTitle as any).innerText.trim() : "";
+        let title = document.title.split('|')[0].trim();
+        if (!title || title.length < 5) {
+          const elTitle = document.querySelector('[data-test="title"]') || document.querySelector('h1.page-title') || document.querySelector('h1');
+          title = elTitle ? (elTitle as any).innerText.trim() : "";
+        }
         
         // 2. Description
         let description = "";
         
-        // Prioritize "Productbeschrijving" heading extraction
+        // ... (rest of description logic remains unchanged) ...
         const headings = Array.from(document.querySelectorAll('h2, h3, h4, b, strong, span'));
         const descHeading = headings.find(h => {
           const t = (h as any).innerText || (h as any).textContent || "";
@@ -721,48 +724,92 @@ async function startServer() {
           if (pooledText) description = pooledText;
         }
 
-        // 3. Price
+        // 3. Price (Prioritize LD+JSON as requested)
         let price = "N/A";
-        const promoEl = document.querySelector('#buyBlockSlot [class*="text-promo-text-high"]') || 
-                        document.querySelector('.promo-price') || 
-                        document.querySelector('[data-test="price"]') ||
-                        document.querySelector('.buy-block__price');
-        if (promoEl) {
-           price = (promoEl as any).innerText.replace(/\s+/g, '').replace('€', '').trim().replace(',', '.');
-           // Ensure it's a valid price format
-           if (!/^\d+\.\d+$/.test(price) && price.includes('.')) {
-              // already okay
-           } else if (/^\d+$/.test(price)) {
-              // missing cents? Bol usually has ,- for round numbers
-           }
-        } else {
-          const buyBlock = document.querySelector('#buyBlockSlot') || document.querySelector('.buy-block') || document.querySelector('[data-test="buy-block"]');
-          if (buyBlock) {
-             const text = (buyBlock as any).innerText;
-             const match = text.match(/(\d+),(\d{2})/) || text.match(/(\d+),-/);
-             if (match) price = match[2] ? `${match[1]}.${match[2]}` : `${match[1]}.00`;
+        
+        try {
+          const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'));
+          for (const script of scripts) {
+            try {
+              const data = JSON.parse(script.textContent || "");
+              const findPrice = (obj: any): string | null => {
+                if (obj.offers) {
+                  if (Array.isArray(obj.offers)) return obj.offers[0].price || null;
+                  return obj.offers.price || null;
+                }
+                if (obj["@type"] === "Offer") return obj.price || null;
+                return null;
+              };
+              
+              if (Array.isArray(data)) {
+                for (const item of data) {
+                  const p = findPrice(item);
+                  if (p) { price = String(p); break; }
+                }
+              } else {
+                const p = findPrice(data);
+                if (p) price = String(p);
+              }
+              if (price !== "N/A") break;
+            } catch(e) {}
           }
-          if (price === "N/A") {
-            const meta = document.querySelector('meta[property="product:price:amount"]') || document.querySelector('meta[itemprop="price"]');
-            if (meta) price = meta.getAttribute('content') || "N/A";
+        } catch(e) {}
+
+        if (price === "N/A") {
+          const promoEl = document.querySelector('#buyBlockSlot [class*="text-promo-text-high"]') || 
+                          document.querySelector('.promo-price') || 
+                          document.querySelector('[data-test="price"]') ||
+                          document.querySelector('.buy-block__price');
+          if (promoEl) {
+             price = (promoEl as any).innerText.replace(/\s+/g, '').replace('€', '').trim().replace(',', '.');
+          } else {
+            const buyBlock = document.querySelector('#buyBlockSlot') || document.querySelector('.buy-block') || document.querySelector('[data-test="buy-block"]');
+            if (buyBlock) {
+               const text = (buyBlock as any).innerText;
+               const match = text.match(/(\d+),(\d{2})/) || text.match(/(\d+),-/);
+               if (match) price = match[2] ? `${match[1]}.${match[2]}` : `${match[1]}.00`;
+            }
           }
         }
 
-        // 4. Shipping
+        // 4. Shipping (JSON-LD + User snippet indicators)
         let shippingText = "N/A";
-        // Look for "Uiterlijk [Date] in huis" or "Morgen in huis"
-        const deliveryPromise = document.querySelector('.delivery-promise') || 
-                                document.querySelector('[data-test="delivery-highlight"]') || 
-                                document.querySelector('.delivery-delivery-time') || 
-                                document.querySelector('[data-test="delivery-promise"]') ||
-                                document.querySelector('.buy-block__delivery-text');
-                                
-        if (deliveryPromise) {
-          shippingText = (deliveryPromise as any).innerText.trim();
-        } else {
-          const bodyText = document.body.innerText;
-          const uiterlijkMatch = bodyText.match(/Uiterlijk\s+(.+?)\s+in\s+huis/i);
-          if (uiterlijkMatch) shippingText = uiterlijkMatch[0];
+        
+        try {
+          const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'));
+          for (const script of scripts) {
+            try {
+              const data = JSON.parse(script.textContent || "");
+              const findShipping = (obj: any): string | null => {
+                const ship = obj.shippingDetails || obj.offers?.shippingDetails;
+                if (ship && ship.deliveryTime) {
+                  const dt = ship.deliveryTime;
+                  if (dt.transitTime) return `Delivery in ${dt.transitTime.minValue || dt.transitTime.value}-${dt.transitTime.maxValue || dt.transitTime.value} days`;
+                }
+                return null;
+              };
+              
+              const s = Array.isArray(data) ? data.map(findShipping).find(x => x) : findShipping(data);
+              if (s) { shippingText = s; break; }
+            } catch(e) {}
+          }
+        } catch(e) {}
+
+        if (shippingText === "N/A") {
+          const deliveryPromise = document.querySelector('[data-csa-c-delivery-time]') || // As per user snippet
+                                  document.querySelector('.delivery-promise') || 
+                                  document.querySelector('[data-test="delivery-highlight"]') || 
+                                  document.querySelector('.delivery-delivery-time') || 
+                                  document.querySelector('[data-test="delivery-promise"]') ||
+                                  document.querySelector('.buy-block__delivery-text');
+                                  
+          if (deliveryPromise) {
+            shippingText = deliveryPromise.getAttribute('data-csa-c-delivery-time') || (deliveryPromise as any).innerText.trim();
+          } else {
+            const bodyText = document.body.innerText;
+            const uiterlijkMatch = bodyText.match(/Uiterlijk\s+(.+?)\s+in\s+huis/i) || bodyText.match(/Morgen\s+in\s+huis/i);
+            if (uiterlijkMatch) shippingText = uiterlijkMatch[0];
+          }
         }
 
         // 5. Images (Revised extraction to avoid empty results)
