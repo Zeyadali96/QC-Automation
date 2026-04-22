@@ -10,11 +10,10 @@ import { google } from "googleapis";
 import stringSimilarity from "string-similarity";
 import sharp from "sharp";
 import { differenceInDays, parse } from 'date-fns';
-import { chromium } from "playwright";
 import { chromium as chromiumExtra } from "playwright-extra";
 import stealth from "puppeteer-extra-plugin-stealth";
 
-// Configure playwright-extra with stealth plugin
+// Configure playwright-extra with stealth plugin — used for ALL scraping
 chromiumExtra.use(stealth());
 
 async function startServer() {
@@ -73,9 +72,9 @@ async function startServer() {
       const domain = marketplace || 'amazon.com';
       const url = `https://www.${domain}/dp/${asin}`;
       
-      browser = await chromium.launch({ 
+      browser = await chromiumExtra.launch({ 
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
       });
       const context = await browser.newContext({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -110,22 +109,25 @@ async function startServer() {
       
       await context.addCookies(cookies);
       const page = await context.newPage();
-      
-      // Optimize loading by blocking unnecessary resources
-      await page.route('**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf,css}', (route) => {
-        const url = route.request().url();
-        // Allow main product images if needed, but for scraping HTML we usually don't need them
-        // However, we extract image URLs from the script tags or landingImage src, so we don't need the actual image files to load.
-        route.abort();
+
+      // Disable webdriver flag before navigation
+      await page.addInitScript(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
       });
 
-      // Navigate and wait for initial load
+      // Block only fonts/tracking — keep images/CSS so data-a-dynamic-image populates
+      await page.route('**/*.{woff,woff2,ttf,otf}', route => route.abort());
+      await page.route('**/analytics*', route => route.abort());
+      await page.route('**/tracking*', route => route.abort());
+
+      // Navigate and wait for DOM + AJAX pricing to load
       try {
-        await page.goto(url, { waitUntil: 'load', timeout: 60000 });
-        await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => null);
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        // Wait for networkidle so AJAX buybox price loads
+        await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => null);
       } catch (e: any) {
         if (e.name === 'TimeoutError') {
-          console.warn("Initial navigation timed out, attempting to proceed with current content...");
+          console.warn("Amazon navigation timed out, proceeding with current content...");
         } else {
           throw e;
         }
@@ -149,24 +151,41 @@ async function startServer() {
         throw new Error("Amazon blocked the request with a CAPTCHA. Please try again later.");
       }
 
-      // Wait a bit more for dynamic elements (variations, etc.)
-      await page.waitForTimeout(3000);
+      // Extra wait for AJAX price/shipping elements to fully render
+      await page.waitForTimeout(4000);
       
-      // Get content
+      // Try to wait for the buybox price element specifically
+      await page.waitForSelector('#corePriceDisplay_desktop_feature_div, #corePrice_feature_div, #price_inside_buybox', { timeout: 8000 }).catch(() => null);
+
+      // Get content after full JS hydration
       const content = await page.content();
       const $ = cheerio.load(content);
 
-      // 1. Image Extraction (Extracting main and secondary images, deduplicating via getUniqueImages)
+      // 1. Image Extraction — Strategy A: data-a-dynamic-image (highest resolution JSON)
       let images: string[] = [];
-      const landingImg = $('#landingImage').attr('data-old-hires') || $('#landingImage').attr('src');
-      if (landingImg && landingImg.startsWith('http')) images.push(landingImg);
-      
+      const dynamicImgJson = $('#landingImage').attr('data-a-dynamic-image');
+      if (dynamicImgJson) {
+        try {
+          const imgMap = JSON.parse(dynamicImgJson);
+          // Sort by resolution descending, take highest-res URL
+          const sorted = Object.keys(imgMap).sort((a, b) => {
+            const [wa, ha] = imgMap[a]; const [wb, hb] = imgMap[b];
+            return (wb * hb) - (wa * ha);
+          });
+          if (sorted[0]) images.push(sorted[0]);
+        } catch(e) { console.warn('Failed to parse data-a-dynamic-image'); }
+      }
+
+      // Strategy B: data-old-hires on landing image
+      const landingHires = $('#landingImage').attr('data-old-hires');
+      if (landingHires && landingHires.startsWith('http')) images.push(landingHires);
+
+      // Strategy C: Alt images strip sizing fragments for full-res
       $('#altImages ul li img').each((_, el) => {
-        const url = $(el).attr('data-old-hires') || $(el).attr('src');
-        if (url && url.startsWith('http')) {
-          images.push(url);
-        }
+        const src = $(el).attr('data-old-hires') || $(el).attr('src') || '';
+        if (src.startsWith('http')) images.push(src);
       });
+
       const uniqueImages = getUniqueImages(images);
 
       // A+ Content Extraction (Exclude Brand Stories)
@@ -523,7 +542,7 @@ async function startServer() {
         console.log("Using standard proxy for Bol.com");
       }
       
-      browser = await chromium.launch(launchOptions);
+      browser = await chromiumExtra.launch(launchOptions);
       
       // Rotate user agents
       const userAgents = [
