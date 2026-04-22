@@ -195,27 +195,33 @@ async function startServer() {
       // Shipping Extraction (Target: div#mir-layout-DELIVERY_BLOCK)
       const deliverySelectors = [
         '#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE',
+        '#mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE',
         '#mir-layout-DELIVERY_BLOCK',
         '#deliveryBlockMessage',
         '#pfd-desktop-PRIMARY_DELIVERY_MESSAGE_LARGE',
-        '#mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE',
         '#fastest_delivery_message',
         '#upsell-messaging',
         '#ddmDeliveryMessage',
-        '.a-spacing-base .a-text-bold',
-        '#pba-delivery-message'
+        '#pba-delivery-message',
+        '#exports_desktop_qualifiedBuybox_delivery_message',
+        '.a-spacing-base .a-text-bold'
       ];
       
       let rawShippingTime = "";
       for (const selector of deliverySelectors) {
         const el = $(selector);
         if (el.length) {
-          rawShippingTime = el.find('span').attr('data-csa-c-delivery-time') || el.attr('data-csa-c-delivery-time') || "";
+          // Priority 1: data attribute
+          rawShippingTime = el.find('[data-csa-c-delivery-time]').attr('data-csa-c-delivery-time') || 
+                           el.attr('data-csa-c-delivery-time') || "";
+          
+          // Priority 2: Text content if attribute missing
           if (!rawShippingTime) {
-            // Try to find the bold text which usually contains the date
-            rawShippingTime = el.find('.a-text-bold').first().text().trim() || el.text().trim();
+            rawShippingTime = el.find('.a-text-bold').first().text().trim() || 
+                             el.find('b').first().text().trim() ||
+                             el.text().trim();
           }
-          if (rawShippingTime) break;
+          if (rawShippingTime && rawShippingTime.length > 3) break;
         }
       }
       
@@ -223,60 +229,67 @@ async function startServer() {
       
       let shippingDaysNum = 0;
       let shippingDaysStr = "N/A";
+      
       if (rawShippingTime) {
         try {
           const today = new Date();
+          today.setHours(0, 0, 0, 0);
           const currentYear = today.getFullYear();
-          
-          let dateStr = rawShippingTime;
-          // Handle ranges by taking the first date
-          if (dateStr.includes('-')) {
-            dateStr = dateStr.split('-')[0].trim();
-          }
-          
-          // Basic Dutch parsing for Amazon.nl
-          const nlMonthMap: Record<string, number> = {
-            'januari': 0, 'februari': 1, 'maart': 2, 'april': 3, 'mei': 4, 'juni': 5,
-            'juli': 6, 'augustus': 7, 'september': 8, 'oktober': 9, 'november': 10, 'december': 11
-          };
-
-          const s = dateStr.toLowerCase();
-          const dayMatch = s.match(/\d+/);
-          const monthMatch = s.match(/[a-z]+/g) || [];
-          
           let targetDate: Date | null = null;
 
-          if (dayMatch) {
-            const day = parseInt(dayMatch[0]);
+          // Multi-language month maps
+          const monthMap: Record<string, number> = {
+            // English
+            'january': 0, 'february': 1, 'march': 2, 'april': 3, 'may': 4, 'june': 5, 
+            'july': 6, 'august': 7, 'september': 8, 'october': 9, 'november': 10, 'december': 11,
+            'jan': 0, 'feb': 1, 'mar': 2, 'apr': 3, 'may': 4, 'jun': 5, 'jul': 6, 'aug': 7, 'sep': 8, 'oct': 9, 'nov': 10, 'dec': 11,
+            // Dutch (Amazon.nl)
+            'januari': 0, 'februari': 1, 'maart': 2, 'mei': 4, 'juni': 5, 'juli': 6, 'augustus': 7, 'oktober': 9,
+            // German (Amazon.de)
+            'januar': 0, 'februar': 1, 'märz': 2, 'mai': 4, 'juni': 5, 'juli': 6, 'oktober': 9, 'dezember': 11,
+            'jan.': 0, 'feb.': 1, 'märz': 2, 'apr.': 3, 'mai': 4, 'juni': 5, 'juli': 6, 'aug.': 7, 'sept.': 8, 'okt.': 9, 'nov.': 10, 'dez.': 11,
+            // Polish (Amazon.pl)
+            'stycznia': 0, 'lutego': 1, 'marca': 2, 'kwietnia': 3, 'maja': 4, 'czerwca': 5, 'lipca': 6, 'sierpnia': 7, 'września': 8, 'października': 9, 'listopada': 10, 'grudnia': 11,
+            'styczni': 0, 'lut': 1, 'mar': 2, 'kwie': 3, 'maj': 4, 'czerw': 5, 'lip': 6, 'sierp': 7, 'wrze': 8, 'paź': 9, 'list': 10, 'grud': 11,
+            // Swedish (Amazon.se)
+            'januari': 0, 'februari': 1, 'mars': 2, 'maj': 4, 'juni': 5, 'juli': 6, 'augusti': 7, 'oktober': 9, 'november': 10, 'december': 11
+          };
+
+          const s = rawShippingTime.toLowerCase();
+          
+          // Check for "Tomorrow" in various languages
+          if (/tomorrow|morgen|jutro|i morgon/i.test(s)) {
+            targetDate = new Date(today);
+            targetDate.setDate(today.getDate() + 1);
+          } else if (/today|vandaag|heute|dzisiaj|idag/i.test(s)) {
+            targetDate = new Date(today);
+          } else {
+            // Find day and month
+            const dayMatch = s.match(/(\d+)/);
             let monthIndex = -1;
-            
-            for (const monthName of monthMatch) {
-              if (nlMonthMap[monthName] !== undefined) {
-                monthIndex = nlMonthMap[monthName];
+
+            for (const [name, index] of Object.entries(monthMap)) {
+              if (s.includes(name)) {
+                monthIndex = index;
                 break;
               }
             }
 
-            if (monthIndex !== -1) {
+            if (dayMatch && monthIndex !== -1) {
+              const day = parseInt(dayMatch[1]);
               targetDate = new Date(currentYear, monthIndex, day);
-            } else {
-              // Try standard parsing
-              const parsed = new Date(dateStr + ` ${currentYear}`);
-              if (!isNaN(parsed.getTime())) targetDate = parsed;
+              
+              // Handle year rollover (e.g., today is Dec 30, and delivery is Jan 2)
+              if (targetDate.getTime() < today.getTime() - (30 * 24 * 60 * 60 * 1000)) {
+                targetDate.setFullYear(currentYear + 1);
+              }
             }
-          }
-
-          if (!targetDate && /morgen|tomorrow/i.test(s)) {
-            targetDate = new Date();
-            targetDate.setDate(targetDate.getDate() + 1);
           }
 
           if (targetDate) {
             targetDate.setHours(0, 0, 0, 0);
-            const todayClean = new Date();
-            todayClean.setHours(0, 0, 0, 0);
-            const diff = differenceInDays(targetDate, todayClean);
-            shippingDaysNum = diff >= 0 ? diff : 0;
+            shippingDaysNum = Math.ceil((targetDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+            if (shippingDaysNum < 0) shippingDaysNum = 0;
             shippingDaysStr = `${shippingDaysNum} Days`;
           }
         } catch (e) {
