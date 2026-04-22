@@ -252,22 +252,16 @@ async function startServer() {
             'stycznia': 0, 'lutego': 1, 'marca': 2, 'kwietnia': 3, 'maja': 4, 'czerwca': 5, 'lipca': 6, 'sierpnia': 7, 'września': 8, 'października': 9, 'listopada': 10, 'grudnia': 11,
             'styczni': 0, 'lut': 1, 'mar': 2, 'kwie': 3, 'maj': 4, 'czerw': 5, 'lip': 6, 'sierp': 7, 'wrze': 8, 'paź': 9, 'list': 10, 'grud': 11,
             // Swedish (Amazon.se)
-            'januari': 0, 'februari': 1, 'mars': 2, 'maj': 4, 'juni': 5, 'juli': 6, 'augusti': 7, 'oktober': 9, 'november': 10, 'december': 11,
-            // French (Amazon.fr)
-            'janvier': 0, 'février': 1, 'mars': 2, 'avril': 3, 'mai': 4, 'juin': 5, 'juillet': 6, 'août': 7, 'septembre': 8, 'octobre': 9, 'novembre': 10, 'décembre': 11,
-            'janv.': 0, 'févr.': 1, 'avr.': 3, 'juil.': 6, 'sept.': 8, 'oct.': 9, 'nov.': 10, 'déc.': 11,
-            // Spanish (Amazon.es)
-            'enero': 0, 'febrero': 1, 'marzo': 2, 'abril': 3, 'mayo': 4, 'junio': 5, 'julio': 6, 'agosto': 7, 'septiembre': 8, 'octubre': 9, 'noviembre': 10, 'diciembre': 11,
-            'ene.': 0, 'feb.': 1, 'mar.': 2, 'abr.': 3, 'may.': 4, 'jun.': 5, 'jul.': 6, 'ago.': 7, 'oct.': 9, 'nov.': 10, 'dic.': 11
+            'januari': 0, 'februari': 1, 'mars': 2, 'maj': 4, 'juni': 5, 'juli': 6, 'augusti': 7, 'oktober': 9, 'november': 10, 'december': 11
           };
 
           const s = rawShippingTime.toLowerCase();
           
           // Check for "Tomorrow" in various languages
-          if (/tomorrow|morgen|jutro|i morgon|demain|mañana/i.test(s)) {
+          if (/tomorrow|morgen|jutro|i morgon/i.test(s)) {
             targetDate = new Date(today);
             targetDate.setDate(today.getDate() + 1);
-          } else if (/today|vandaag|heute|dzisiaj|idag|aujourd'hui|hoy/i.test(s)) {
+          } else if (/today|vandaag|heute|dzisiaj|idag/i.test(s)) {
             targetDate = new Date(today);
           } else {
             // Find day and month
