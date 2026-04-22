@@ -11,6 +11,11 @@ import stringSimilarity from "string-similarity";
 import sharp from "sharp";
 import { differenceInDays, parse } from 'date-fns';
 import { chromium } from "playwright";
+import { chromium as chromiumExtra } from "playwright-extra";
+import stealth from "puppeteer-extra-plugin-stealth";
+
+// Configure playwright-extra with stealth plugin
+chromiumExtra.use(stealth());
 
 async function startServer() {
   const app = express();
@@ -499,11 +504,28 @@ async function startServer() {
       
       console.log(`Starting Bol Audit for EAN: ${ean}`);
       
-      browser = await chromium.launch({ 
+      const launchOptions: any = { 
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox']
-      });
+      };
+      
+      if (process.env.ANTIGRAVITY_API_KEY) {
+        launchOptions.proxy = {
+          server: `http://${process.env.ANTIGRAVITY_API_KEY}:residential-nl@proxy.antigravityai.com:8080`
+        };
+        console.log("Using Antigravity NL Residential Proxy for Bol.com");
+      } else if (process.env.PROXY_SERVER) {
+        launchOptions.proxy = {
+          server: process.env.PROXY_SERVER,
+          username: process.env.PROXY_USERNAME,
+          password: process.env.PROXY_PASSWORD
+        };
+        console.log("Using standard proxy for Bol.com");
+      }
+      
+      browser = await chromium.launch(launchOptions);
       const context = await browser.newContext({
+        incognito: true,
         userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         viewport: { width: 1920, height: 1080 },
         extraHTTPHeaders: {
@@ -525,16 +547,35 @@ async function startServer() {
 
       const page = await context.newPage();
       
-      // Navigate to search results
-      console.log(`Navigating to: ${searchUrl}`);
-      try {
-        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-      } catch (e: any) {
-        if (e.name === 'TimeoutError') {
-          console.warn("Bol search navigation timed out, attempting to proceed...");
-        } else {
-          throw e;
+      // Add request/response logging for debugging
+      page.on('response', response => {
+        if (response.status() >= 400) {
+          console.warn(`Response ${response.status()} for ${response.url()}`);
         }
+      });
+      
+      // Navigate to search results with retries
+      console.log(`Navigating to: ${searchUrl}`);
+      let navigationSuccess = false;
+      let lastError: any;
+      
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+          navigationSuccess = true;
+          console.log(`Navigation successful on attempt ${attempt}`);
+          break;
+        } catch (e: any) {
+          lastError = e;
+          console.warn(`Navigation attempt ${attempt} failed: ${e.message}`);
+          if (attempt < 3) {
+            await page.waitForTimeout(2000 + attempt * 1000);
+          }
+        }
+      }
+      
+      if (!navigationSuccess) {
+        throw new Error(`Failed to navigate to BOL after 3 attempts: ${lastError?.message}`);
       }
       
       // Check for CAPTCHA or blocking
@@ -542,16 +583,25 @@ async function startServer() {
         // @ts-ignore
         if (typeof __name === 'undefined') { (window as any).__name = (t: any, v: any) => t; }
         const text = document.body.innerText;
+        const html = document.documentElement.innerHTML;
         return document.title.includes('Robot Check') || 
+               document.title.includes('Access Denied') ||
+               document.title.includes('Blocked') ||
                text.includes('Type the characters you see in this image') ||
                text.includes('To discuss automated access to Amazon data please contact') ||
                text.includes('Ben je een robot?') ||
                text.includes('rustig aan speed racer') ||
-               text.includes('Je gaat iets te snel');
+               text.includes('Je gaat iets te snel') ||
+               text.includes('geblokkeerd') ||
+               text.includes('Blocked') ||
+               text.includes('Access Denied') ||
+               text.includes('IP adres') ||
+               html.includes('429') ||
+               html.includes('403');
       });
 
       if (isBlocked) {
-        throw new Error("Bol.com blocked the request (Rate limited / Speed Racer detected). Please wait a few minutes.");
+        throw new Error("Bol.com blocked the request (IP blocked/Rate limited/Speed Racer detected). Try using a proxy or wait a few minutes.");
       }
 
       // Check if we are on a search page or product page
@@ -618,29 +668,43 @@ async function startServer() {
       });
 
       // Wait for network idle to ensure hydration
-      await page.waitForLoadState('load', { timeout: 15000 }).catch(() => null);
-      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {
+      await page.waitForLoadState('load', { timeout: 20000 }).catch(() => null);
+      await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {
         console.warn("Network idle timeout, proceeding with current state.");
       });
 
       // Extra wait for dynamic content (variations, etc.)
       await page.waitForTimeout(3000);
 
+      // Check if page loaded properly
+      const pageLoaded = await page.evaluate(() => {
+        return document.body.innerText && document.body.innerText.length > 100;
+      });
+      
+      if (!pageLoaded) {
+        throw new Error("Page content did not load properly. Possible block or network issue.");
+      }
+
       // Scroll to media container to trigger lazy loading
       await page.evaluate(() => {
-        const media = document.querySelector('.js_product_media_items') || 
+        const media = document.querySelector('[data-test="product-main-image"]') ||
+                      document.querySelector('.js_product_media_items') || 
                       document.querySelector('.pdp-images') || 
-                      document.querySelector('.buy-block');
+                      document.querySelector('.buy-block') ||
+                      document.querySelector('[class*="ProductImage"]') ||
+                      document.querySelector('[id*="image"]');
         if (media) {
           media.scrollIntoView();
           // Scroll a bit more to ensure thumbnails are triggered
           window.scrollBy(0, 300);
+        } else {
+          window.scrollBy(0, 500);
         }
       });
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(2500);
 
       // Wait for media container specifically
-      await page.waitForSelector('.js_product_media_items, .pdp-images, [data-test="product-main-image"]', { timeout: 10000 }).catch(() => null);
+      await page.waitForSelector('[data-test="product-main-image"], .js_product_media_items, .pdp-images, [class*="ProductImage"], img', { timeout: 10000 }).catch(() => null);
 
       const liveDataRaw = await page.evaluate(function() {
         // @ts-ignore
@@ -756,19 +820,40 @@ async function startServer() {
         } catch(e) {}
 
         if (price === "N/A") {
-          const promoEl = document.querySelector('#buyBlockSlot [class*="text-promo-text-high"]') || 
-                          document.querySelector('.promo-price') || 
-                          document.querySelector('[data-test="price"]') ||
-                          document.querySelector('.buy-block__price');
-          if (promoEl) {
-             price = (promoEl as any).innerText.replace(/\s+/g, '').replace('€', '').trim().replace(',', '.');
-          } else {
-            const buyBlock = document.querySelector('#buyBlockSlot') || document.querySelector('.buy-block') || document.querySelector('[data-test="buy-block"]');
-            if (buyBlock) {
-               const text = (buyBlock as any).innerText;
-               const match = text.match(/(\d+),(\d{2})/) || text.match(/(\d+),-/);
-               if (match) price = match[2] ? `${match[1]}.${match[2]}` : `${match[1]}.00`;
+          // Try multiple comprehensive selectors for BOL price
+          const priceSelectors = [
+            '[data-test="current-price"]',
+            '[data-test="price"]',
+            'span[class*="promo-price"]',
+            'span[class*="current-price"]',
+            'span[itemprop="price"]',
+            '#price',
+            '.price',
+            '[class*="ProductPrice"]',
+            'span[class*="Price"]',
+            'div[class*="price-content"]',
+            '[data-element-type="price"]'
+          ];
+          
+          for (const selector of priceSelectors) {
+            const priceEl = document.querySelector(selector);
+            if (priceEl) {
+              const text = (priceEl as any).innerText || (priceEl as any).textContent;
+              if (text) {
+                const match = text.match(/[\d.]+,\d{2}|[\d,]+/);
+                if (match) {
+                  price = match[0].replace(',', '.');
+                  break;
+                }
+              }
             }
+          }
+          
+          // Fallback: search in all text
+          if (price === "N/A") {
+            const allText = document.body.innerText;
+            const priceMatch = allText.match(/€\s*([\d.]+,\d{2})/);
+            if (priceMatch) price = priceMatch[1].replace(',', '.');
           }
         }
 
@@ -796,19 +881,38 @@ async function startServer() {
         } catch(e) {}
 
         if (shippingText === "N/A") {
-          const deliveryPromise = document.querySelector('[data-csa-c-delivery-time]') || // As per user snippet
-                                  document.querySelector('.delivery-promise') || 
-                                  document.querySelector('[data-test="delivery-highlight"]') || 
-                                  document.querySelector('.delivery-delivery-time') || 
-                                  document.querySelector('[data-test="delivery-promise"]') ||
-                                  document.querySelector('.buy-block__delivery-text');
-                                  
-          if (deliveryPromise) {
-            shippingText = deliveryPromise.getAttribute('data-csa-c-delivery-time') || (deliveryPromise as any).innerText.trim();
-          } else {
+          // Try multiple comprehensive selectors for BOL shipping
+          const shippingSelectors = [
+            '[data-test="delivery-message"]',
+            '[data-test="delivery"]',
+            'span[class*="delivery"]',
+            'div[class*="shipping"]',
+            '[class*="DeliveryInformation"]',
+            'span[class*="Delivery"]',
+            '.delivery-text',
+            '[data-element-type="delivery"]',
+            'span[itemprop="deliveryTime"]'
+          ];
+          
+          for (const selector of shippingSelectors) {
+            const shippingEl = document.querySelector(selector);
+            if (shippingEl) {
+              const text = (shippingEl as any).innerText || (shippingEl as any).textContent;
+              if (text && text.trim().length > 0) {
+                shippingText = text.trim();
+                break;
+              }
+            }
+          }
+          
+          // Fallback: search in body text for date patterns
+          if (shippingText === "N/A") {
             const bodyText = document.body.innerText;
-            const uiterlijkMatch = bodyText.match(/Uiterlijk\s+(.+?)\s+in\s+huis/i) || bodyText.match(/Morgen\s+in\s+huis/i);
-            if (uiterlijkMatch) shippingText = uiterlijkMatch[0];
+            const uiterlijkMatch = bodyText.match(/Uiterlijk\s+(.+?)(?:\s+in\s+huis|$)/i) || 
+                                   bodyText.match(/Morgen\s+in\s+huis/i) ||
+                                   bodyText.match(/Vandaag\s+.*?(?:in|om)/i) ||
+                                   bodyText.match(/Bezorging:\s+(.+?)(?:\n|$)/i);
+            if (uiterlijkMatch) shippingText = uiterlijkMatch[0] || uiterlijkMatch[1] || "N/A";
           }
         }
 
@@ -859,6 +963,8 @@ async function startServer() {
         // 6. Variations & A+
         const hasVariations = !!(
           document.querySelector('[data-test="variant-selector"]') || 
+          document.querySelector('[data-test="product-variant"]') ||
+          document.querySelector('[data-test="attribute-selector"]') ||
           document.querySelector('.variant-selector') || 
           document.querySelector('.js_bundle_as_variant_selector') ||
           document.querySelector('[data-test="variant-dropdown"]') ||
@@ -866,29 +972,39 @@ async function startServer() {
           document.querySelector('[data-test="variant-list"]') ||
           document.querySelector('.pdp-variant-selector') ||
           document.querySelector('.js_variant_dropdown') ||
-          // Broad pattern matching for variation themes
-          Array.from(document.querySelectorAll('span, div, h3, label')).some(el => {
-            const t = (el as any).innerText || "";
+          document.querySelector('[class*="VariantSelector"]') ||
+          document.querySelector('[class*="variant"]') ||
+          document.querySelector('select[name*="variant"]') ||
+          document.querySelector('select[data-test*="variant"]') ||
+          // Broad pattern matching for variation themes and buttons
+          Array.from(document.querySelectorAll('button, span, div, h3, label, select')).some(el => {
+            const t = ((el as any).innerText || "").toLowerCase();
             const themes = [
-              'Kies je kleur', 
-              'Kies je maat', 
-              'Kies je variant', 
-              'Kies je bestanddeel', 
-              'Kies je model',
-              'Kies je type',
-              'Kies je uitvoering',
-              'Kies je breedte',
-              'Kies je lengte',
-              'Kies je inhoud',
-              'Kies je gewicht',
-              'Kies je verpakking',
-              'Kies je aantal',
-              'Kies je materiaal',
-              'Kies je geur',
-              'Kies je smaak',
-              'Kies je stijl',
-              'Kies je set',
-              'Kies je platform'
+              'kies je kleur', 
+              'kies je maat', 
+              'kies je variant', 
+              'kies je bestanddeel', 
+              'kies je model',
+              'kies je type',
+              'kies je uitvoering',
+              'kies je breedte',
+              'kies je lengte',
+              'kies je inhoud',
+              'kies je gewicht',
+              'kies je verpakking',
+              'kies je aantal',
+              'kies je materiaal',
+              'kies je geur',
+              'kies je smaak',
+              'kies je stijl',
+              'kies je set',
+              'kies je platform',
+              'selecteer',
+              'select variant',
+              'choose',
+              'color',
+              'size',
+              'option'
             ];
             return themes.some(theme => t.includes(theme));
           })
