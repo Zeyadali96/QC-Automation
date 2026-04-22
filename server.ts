@@ -598,17 +598,14 @@ async function startServer() {
         }
       });
       
-      // Inject stealth scripts before navigation
-      await page.evaluateOnNewDocument(() => {
-        // @ts-ignore
+      // Inject stealth scripts before navigation (Playwright uses addInitScript, NOT evaluateOnNewDocument)
+      await page.addInitScript(() => {
         Object.defineProperty(navigator, 'webdriver', {
           get: () => undefined,
         });
-        // @ts-ignore
         Object.defineProperty(navigator, 'plugins', {
           get: () => [1, 2, 3, 4, 5],
         });
-        // @ts-ignore
         Object.defineProperty(navigator, 'languages', {
           get: () => ['nl-NL', 'nl', 'en-US', 'en'],
         });
