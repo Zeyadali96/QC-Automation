@@ -750,10 +750,14 @@ async function startServer() {
         }
       }
 
-      // Ensure we are on a product page
-      await page.waitForSelector('div#pdp_main_section, [data-test="title"], h1.page-title, #buyBlockSlot', { timeout: 30000 }).catch(() => {
-        console.warn("Product indicators not found, page might be slow or not a product page.");
+      // Ensure we are on a product page — wait specifically for the title (2026-compatible selector)
+      await page.waitForSelector('[data-test="title"], div#pdp_main_section, h1.page-title, #buyBlockSlot', { timeout: 15000 }).catch(() => {
+        console.warn("Product title not found within 15s, page might be slow or not a product page.");
       });
+
+      // Scroll 400px immediately after title is confirmed to wake up lazy-loaded description and A+ modules
+      await page.evaluate(() => { window.scrollBy(0, 400); });
+      console.log("Triggered 400px scroll to wake lazy-loaded modules.");
 
       // Wait for network idle to ensure hydration - with longer timeout for BOL
       await page.waitForLoadState('load', { timeout: 30000 }).catch(() => null);
