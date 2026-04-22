@@ -297,25 +297,49 @@ async function startServer() {
         }
       }
 
-      // Price Extraction (Target: #corePriceDisplay_desktop_feature_div)
+      // Price Extraction
       let priceDisplay = "N/A";
       let listPrice = "N/A";
       
-      const corePriceDiv = $('#corePriceDisplay_desktop_feature_div, #apex_desktop_price_feature_div');
-      if (corePriceDiv.length) {
-        priceDisplay = corePriceDiv.find('span.a-offscreen').first().text().trim() || 
-                       corePriceDiv.find('.a-price span.a-offscreen').first().text().trim();
-        // List Price / RRP
-        listPrice = corePriceDiv.find('.a-price.a-text-price span.a-offscreen').first().text().trim() || 
-                    $('.basisPrice .a-offscreen').first().text().trim() || 
-                    $('.a-price-range .a-offscreen').first().text().trim() || "N/A";
+      const priceSelectors = [
+        '.apex-core-price-identifier .a-offscreen',
+        '.apex-pricetopay-value .a-offscreen',
+        '#corePriceDisplay_desktop_feature_div .a-offscreen',
+        '#corePrice_feature_div .a-offscreen',
+        '#apex_desktop_price_feature_div .a-offscreen',
+        '#price_inside_buybox',
+        '#priceblock_ourprice',
+        '#priceblock_dealprice',
+        '.a-price span.a-offscreen'
+      ];
+
+      for (const selector of priceSelectors) {
+        const val = $(selector).first().text().trim();
+        if (val && val !== "N/A") {
+          priceDisplay = val;
+          break;
+        }
       }
       
-      if (!priceDisplay || priceDisplay === "N/A") {
-        priceDisplay = $('#price_inside_buybox').text().trim() || 
-                       $('#priceblock_ourprice').text().trim() ||
-                       $('#priceblock_dealprice').text().trim() ||
-                       $('input[name="items[0.base][customerVisiblePrice][displayString]"]').val() as string || "N/A";
+      // Secondary check for buybox input
+      if (priceDisplay === "N/A") {
+        priceDisplay = $('input[name="items[0.base][customerVisiblePrice][displayString]"]').val() as string || "N/A";
+      }
+
+      // List Price / RRP Extraction
+      const listPriceSelectors = [
+        '.a-price.a-text-price span.a-offscreen',
+        '.basisPrice .a-offscreen',
+        '.a-price-range .a-offscreen',
+        '#listPrice'
+      ];
+
+      for (const selector of listPriceSelectors) {
+        const val = $(selector).first().text().trim();
+        if (val && val !== "N/A") {
+          listPrice = val;
+          break;
+        }
       }
 
       const variationSelectors = [
