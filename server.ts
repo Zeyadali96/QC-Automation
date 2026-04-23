@@ -525,10 +525,21 @@ async function startServer() {
       
       const launchOptions: any = { 
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
       };
       
-      if (process.env.ANTIGRAVITY_API_KEY) {
+      // Configure Residential Proxy for Bol.com
+      const resProxyUrl = process.env.RESIDENTIAL_PROXY_URL;
+      const resProxyPass = process.env.PROXY_PASSWORD;
+
+      if (resProxyUrl) {
+        launchOptions.proxy = {
+          server: resProxyUrl,
+          username: 'residential-nl', // Target NL
+          password: resProxyPass
+        };
+        console.log("Using Residential Proxy tunnel for Bol.com (NL)");
+      } else if (process.env.ANTIGRAVITY_API_KEY) {
         launchOptions.proxy = {
           server: `http://${process.env.ANTIGRAVITY_API_KEY}:residential-nl@proxy.antigravityai.com:8080`
         };
@@ -560,22 +571,15 @@ async function startServer() {
       
       const context = await browser.newContext({
         incognito: true,
-        userAgent: selectedUA,
-        viewport: { width: viewportWidth, height: viewportHeight },
+        // Mimic standard Windows 11 Chrome browser
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        viewport: { width: 1920, height: 1080 },
         extraHTTPHeaders: {
           'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-          'Accept-Encoding': 'gzip, deflate, br',
-          'Cache-Control': 'max-age=0',
-          'Referer': 'https://www.google.com/',
-          'Sec-Fetch-Dest': 'document',
-          'Sec-Fetch-Mode': 'navigate',
-          'Sec-Fetch-Site': 'none',
-          'Sec-Fetch-User': '?1',
-          'Sec-Ch-Ua': '"Not A(Brand";v="99", "Google Chrome";v="122", "Chromium";v="122"',
+          'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
           'Sec-Ch-Ua-Mobile': '?0',
           'Sec-Ch-Ua-Platform': '"Windows"',
-          'Upgrade-Insecure-Requests': '1'
         }
       });
 
@@ -589,7 +593,7 @@ async function startServer() {
         { name: 'bol_p_incognito', value: 'true', domain: '.bol.com', path: '/' }
       ]);
 
-      const page = await context.newPage();
+      let page = await context.newPage();
       
       // Add request/response logging for debugging
       page.on('response', response => {
@@ -599,16 +603,15 @@ async function startServer() {
       });
       
       // Inject stealth scripts before navigation (Playwright uses addInitScript, NOT evaluateOnNewDocument)
-      await page.addInitScript(() => {
-        Object.defineProperty(navigator, 'webdriver', {
-          get: () => undefined,
-        });
-        Object.defineProperty(navigator, 'plugins', {
-          get: () => [1, 2, 3, 4, 5],
-        });
-        Object.defineProperty(navigator, 'languages', {
-          get: () => ['nl-NL', 'nl', 'en-US', 'en'],
-        });
+      // Playwright Stealth Fix: Force browser signatures
+      await context.addInitScript(() => {
+        // @ts-ignore
+        Object.defineProperty(navigator, 'webdriver', { get: () => false });
+        // @ts-ignore
+        window.chrome = { runtime: {} };
+        // Spoof language to Dutch to match Residential IP
+        // @ts-ignore
+        Object.defineProperty(navigator, 'languages', { get: () => ['nl-NL', 'nl'] });
       });
       
       // Navigate to search results with retries and intelligent delays
@@ -618,11 +621,35 @@ async function startServer() {
       
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-          // Add random delay before each navigation attempt
           const preDelay = Math.random() * 3000 + 2000;
           await page.waitForTimeout(preDelay);
           
-          await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 50000 });
+          console.log(`Navigation attempt ${attempt} to ${searchUrl}`);
+          await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+          
+          const pageSource = await page.content();
+          if (pageSource.includes("IP adres is geblokkeerd")) {
+            console.error(`❌ Blocked on attempt ${attempt}: IP adres is geblokkeerd`);
+            if (attempt < 3) {
+              console.log("Terminating current page to rotate proxy session...");
+              await page.close();
+              // Reassign the 'page' variable to a new page instance
+              page = await context.newPage();
+              
+              // Re-inject stealth signatures on the new page
+              await page.addInitScript(() => {
+                // @ts-ignore
+                Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                // @ts-ignore
+                window.chrome = { runtime: {} };
+                // @ts-ignore
+                Object.defineProperty(navigator, 'languages', { get: () => ['nl-NL', 'nl'] });
+              });
+              
+              throw new Error("BLOCK: IP adres is geblokkeerd - Retrying with new session");
+            }
+          }
+
           navigationSuccess = true;
           console.log(`Navigation successful on attempt ${attempt}`);
           break;
@@ -630,9 +657,7 @@ async function startServer() {
           lastError = e;
           console.warn(`Navigation attempt ${attempt} failed: ${e.message}`);
           if (attempt < 3) {
-            // Exponential backoff: 5s, 10s, 15s
             const backoffDelay = 5000 * attempt;
-            console.log(`Waiting ${backoffDelay}ms before retry...`);
             await page.waitForTimeout(backoffDelay);
           }
         }
@@ -797,18 +822,19 @@ async function startServer() {
         console.warn("Product title or description not found within 15s, page might be slow or not a product page.");
       });
 
-      // Scroll 400px immediately after title is confirmed to wake up lazy-loaded description and A+ modules
-      await page.evaluate(() => { window.scrollBy(0, 400); });
-      console.log("Triggered 400px scroll to wake lazy-loaded modules.");
-
-      // Wait for network idle to ensure hydration - with longer timeout for BOL
-      await page.waitForLoadState('load', { timeout: 30000 }).catch(() => null);
-      await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {
+      // Wait for network idle strictly for PDP to ensure Price/Shipping are hydrated
+      await page.waitForLoadState('load', { timeout: 45000 }).catch(() => null);
+      await page.waitForLoadState('networkidle', { timeout: 45000 }).catch(() => {
         console.warn("Network idle timeout, proceeding with current state.");
       });
+      
+      // Human-Mimicry: Force scroll event to trigger lazy-loaded description and modules
+      console.log("Human mimicry: scrolling PDP...");
+      await page.mouse.wheel(0, 400);
+      await page.waitForTimeout(2000);
 
       // Extra wait for dynamic content (variations, etc.)
-      await page.waitForTimeout(5000);
+      await page.waitForTimeout(3000);
 
       // Check if page loaded properly
       const pageLoaded = await page.evaluate(() => {
