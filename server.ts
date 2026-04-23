@@ -14,7 +14,7 @@ import { chromium as chromiumExtra } from "playwright-extra";
 import stealth from "puppeteer-extra-plugin-stealth";
 
 // Configure playwright-extra with stealth plugin — used for ALL scraping
-chromiumExtra.use(stealth());
+// chromiumExtra.use(stealth()); 
 
 async function startServer() {
   const app = express();
@@ -692,66 +692,109 @@ async function startServer() {
         console.log("Warning: Some block indicators detected but content was loaded. Proceeding with extraction...");
       }
 
-      // Check if we are on a search page or product page
-      let pageTitle = await page.title();
-      console.log(`Page Title: ${pageTitle}`);
-      
-      const isSearchPage = pageTitle.includes('Alle artikelen') || 
-                           pageTitle.includes('Zoekresultaten') || 
-                           await page.evaluate(function() {
-                             // @ts-ignore
-                             if (typeof __name === 'undefined') { (window as any).__name = (t: any, v: any) => t; }
-                             return !!document.querySelector('.product-list, .product-item--grid, [data-test="product-list"]');
-                           });
-      
+      // ---------------------------------------------------------------
+      // Detect search-result page and navigate to first product link
+      // ---------------------------------------------------------------
+      const pageTitle = await page.title();
+      console.log(`Page title after search: "${pageTitle}"`);
+
+      // Always treat a search-by-EAN URL as a search page (we always start there).
+      // Also detect by title keywords or DOM structure.
+      const isSearchPage =
+        searchUrl.includes('searchtext=') ||
+        pageTitle.includes('Alle artikelen') ||
+        pageTitle.includes('Zoekresultaten') ||
+        await page.evaluate(() => {
+          return !!(
+            document.querySelector('.product-list') ||
+            document.querySelector('.product-item--grid') ||
+            document.querySelector('[data-test="product-list"]') ||
+            document.querySelector('[data-test="products-section"]')
+          );
+        });
+
       if (isSearchPage) {
-        console.log("Search page detected, looking for product link...");
-        // Try to find the first product link - more robust selector
-        const firstProductSelector = 'a[href*="/p/"]:not([href*="javascript"]), .product-title a, a[data-test="product-title"], .product-item--grid a, .product-list a';
-        await page.waitForSelector(firstProductSelector, { timeout: 10000 }).catch(() => null);
-        const firstProductLink = await page.getAttribute(firstProductSelector, 'href').catch(() => null);
-        
-        if (firstProductLink) {
-          const productUrl = firstProductLink.startsWith('http') ? firstProductLink : `https://www.bol.com${firstProductLink}`;
-          console.log(`Navigating to product URL: ${productUrl}`);
+        console.log('🔎 Search results page detected – waiting for products to render...');
+
+        // Wait for at least one product card to appear before scanning links
+        await page.waitForSelector(
+          '[data-test="product-title"], a[href*="/p/"]:not([href*="javascript"]), .product-title a, .product-item--grid a',
+          { timeout: 15000 }
+        ).catch(() => {
+          console.warn('⚠️ Timed out waiting for product cards – will still attempt to grab a link.');
+        });
+
+        // Give the page a moment for any lazy JS to settle
+        await page.waitForTimeout(1000);
+
+        // ---- Ordered list of selectors to try ----
+        const selectors = [
+          'a[data-test="product-title"]',          // Most specific – Bol's own test ID
+          '[data-test="products-section"] a[href*="/p/"]',
+          '[data-test="product-list"] a[href*="/p/"]',
+          '.product-list a[href*="/p/"]',
+          '.product-item--grid a[href*="/p/"]',
+          '.product-title a',
+          'a[href*="/nl/nl/p/"]:not([href*="javascript"])',
+          'a[href*="/p/"]:not([href*="javascript"])',  // Broadest fallback
+        ];
+
+        let productHref: string | null = null;
+
+        for (const sel of selectors) {
           try {
-            await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-          } catch (e: any) {
-            if (e.name === 'TimeoutError') {
-              console.warn("Bol product navigation timed out, attempting to proceed...");
-            } else {
-              throw e;
+            productHref = await page.getAttribute(sel, 'href');
+            if (productHref) {
+              console.log(`✅ Found product link via selector: "${sel}"`);
+              break;
             }
-          }
-        } else {
-          console.warn("No product link found on search page.");
-          // Fallback: try to find any link that looks like a product link
-          const anyProductLink = await page.evaluate(function() {
-            // @ts-ignore
-            if (typeof __name === 'undefined') { (window as any).__name = (t: any, v: any) => t; }
-            const links = Array.from(document.querySelectorAll('a'));
-            const productLink = links.find(a => a.href.includes('/nl/nl/p/') && !a.href.includes('javascript'));
-            return productLink ? productLink.getAttribute('href') : null;
-          });
-          
-          if (anyProductLink) {
-            const productUrl = anyProductLink.startsWith('http') ? anyProductLink : `https://www.bol.com${anyProductLink}`;
-            console.log(`Fallback: Navigating to product URL: ${productUrl}`);
-            try {
-              await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-            } catch (e: any) {
-              if (e.name === 'TimeoutError') {
-                console.warn("Bol fallback product navigation timed out, attempting to proceed...");
-              } else {
-                throw e;
-              }
-            }
+          } catch (_) {
+            // selector not present – try next one
           }
         }
+
+        // If selector list failed, scan the DOM manually
+        if (!productHref) {
+          console.warn('⚠️ Selector list exhausted – scanning full DOM for any /p/ link...');
+          productHref = await page.evaluate(() => {
+            const anchors = Array.from(document.querySelectorAll('a'));
+            const candidate = anchors.find(a =>
+              a.href && a.href.includes('/p/') && !a.href.includes('javascript')
+            );
+            return candidate ? candidate.getAttribute('href') : null;
+          });
+        }
+
+        if (!productHref) {
+          throw new Error(
+            `Bol.com: EAN search returned a results page but no product link was found. ` +
+            `The page may be empty (product not listed on Bol) or Bol's markup has changed.`
+          );
+        }
+
+        // Navigate to the product detail page
+        const productUrl = productHref.startsWith('http')
+          ? productHref
+          : `https://www.bol.com${productHref}`;
+
+        console.log(`➡️ Navigating to product page: ${productUrl}`);
+        try {
+          await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+        } catch (e: any) {
+          if (e.name === 'TimeoutError') {
+            console.warn('⚠️ Product page navigation timed out – proceeding with whatever is loaded.');
+          } else {
+            throw e;
+          }
+        }
+
+        console.log(`✅ Now on product page: "${await page.title()}"`);
       }
 
       // Ensure we are on a product page — wait specifically for the title (2026-compatible selector)
-      await page.waitForSelector('[data-test="title"], div#pdp_main_section, h1.page-title, #buyBlockSlot', { timeout: 15000 }).catch(() => {
+      await page.waitForSelector('[data-test="title"], div#pdp_main_section, h1.page-title, #buyBlockSlot, #pdp_description', { timeout: 15000 }).catch(() => {
+        console.warn("Product title or description not found within 15s, page might be slow or not a product page.");
+      });
         console.warn("Product title not found within 15s, page might be slow or not a product page.");
       });
 
