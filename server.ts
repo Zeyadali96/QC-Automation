@@ -151,15 +151,68 @@ async function startServer() {
         throw new Error("Amazon blocked the request with a CAPTCHA. Please try again later.");
       }
 
-      // Extra wait for AJAX price/shipping elements to fully render
-      await page.waitForTimeout(4000);
-      
-      // Try to wait for the buybox price element specifically
-      await page.waitForSelector('#corePriceDisplay_desktop_feature_div, #corePrice_feature_div, #price_inside_buybox', { timeout: 8000 }).catch(() => null);
+      // Get content immediately after domcontentloaded/buybox wait
+      let content = await page.content();
+      let $ = cheerio.load(content);
 
-      // Get content after full JS hydration
-      const content = await page.content();
-      const $ = cheerio.load(content);
+      // --- PHASE 1: TOP-PAGE DATA (Price & Shipping) ---
+      
+      // Price Extraction
+      let priceDisplay = "N/A";
+      let listPrice = "N/A";
+      
+      const priceSelectors = [
+        'span.a-offscreen', // High priority as requested
+        '#corePriceDisplay_desktop_feature_div .a-offscreen',
+        '#corePrice_feature_div .a-offscreen',
+        '#price_inside_buybox',
+        '.apex-core-price-identifier .a-offscreen',
+        '.apex-pricetopay-value .a-offscreen',
+        '#apex_desktop_price_feature_div .a-offscreen',
+        '.a-price span.a-offscreen'
+      ];
+
+      for (const selector of priceSelectors) {
+        const val = $(selector).first().text().trim();
+        if (val && val !== "N/A") {
+          priceDisplay = val;
+          break;
+        }
+      }
+      
+      // Shipping Extraction (Prioritize mir-layout-DELIVERY_BLOCK)
+      const deliverySelectors = [
+        '#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE',
+        '#mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE',
+        '#mir-layout-DELIVERY_BLOCK',
+        '#deliveryBlockMessage',
+        '#pfd-desktop-PRIMARY_DELIVERY_MESSAGE_LARGE'
+      ];
+      
+      let rawShippingTime = "N/A";
+      for (const selector of deliverySelectors) {
+        const el = $(selector);
+        if (el.length) {
+          rawShippingTime = el.find('[data-csa-c-delivery-time]').attr('data-csa-c-delivery-time') || 
+                           el.attr('data-csa-c-delivery-time') || 
+                           el.find('.a-text-bold').first().text().trim() || 
+                           el.text().trim();
+          if (rawShippingTime && rawShippingTime.length > 3) break;
+        }
+      }
+
+      console.log(`✅ Top-page data secured: Price=${priceDisplay}, Shipping=${rawShippingTime}`);
+
+      // --- PHASE 2: LOWER-PAGE DATA (A+, Images, Description) ---
+
+      // Human-mimicry: Scroll down to trigger lazy-loaded A+ and modules
+      console.log("Scrolling for A+ content and images...");
+      await page.mouse.wheel(0, 800);
+      await page.waitForTimeout(3000);
+      
+      // Re-load content for hydrated elements
+      content = await page.content();
+      $ = cheerio.load(content);
 
       // 1. Image Extraction — Strategy A: data-a-dynamic-image (highest resolution JSON)
       let images: string[] = [];
@@ -223,45 +276,11 @@ async function startServer() {
         amazonDesc = "No description on detail page";
       }
 
-      // Shipping Extraction (Target: div#mir-layout-DELIVERY_BLOCK)
-      const deliverySelectors = [
-        '#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE',
-        '#mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE',
-        '#mir-layout-DELIVERY_BLOCK',
-        '#deliveryBlockMessage',
-        '#pfd-desktop-PRIMARY_DELIVERY_MESSAGE_LARGE',
-        '#fastest_delivery_message',
-        '#upsell-messaging',
-        '#ddmDeliveryMessage',
-        '#pba-delivery-message',
-        '#exports_desktop_qualifiedBuybox_delivery_message',
-        '.a-spacing-base .a-text-bold'
-      ];
-      
-      let rawShippingTime = "";
-      for (const selector of deliverySelectors) {
-        const el = $(selector);
-        if (el.length) {
-          // Priority 1: data attribute
-          rawShippingTime = el.find('[data-csa-c-delivery-time]').attr('data-csa-c-delivery-time') || 
-                           el.attr('data-csa-c-delivery-time') || "";
-          
-          // Priority 2: Text content if attribute missing
-          if (!rawShippingTime) {
-            rawShippingTime = el.find('.a-text-bold').first().text().trim() || 
-                             el.find('b').first().text().trim() ||
-                             el.text().trim();
-          }
-          if (rawShippingTime && rawShippingTime.length > 3) break;
-        }
-      }
-      
-      console.log(`Extracted Raw Shipping: ${rawShippingTime}`);
-      
+      // Shipping parsing using the rawShippingTime extracted in Phase 1
       let shippingDaysNum = 0;
       let shippingDaysStr = "N/A";
       
-      if (rawShippingTime) {
+      if (rawShippingTime && rawShippingTime !== "N/A") {
         try {
           const today = new Date();
           today.setHours(0, 0, 0, 0);
@@ -325,51 +344,6 @@ async function startServer() {
           }
         } catch (e) {
           console.error("Shipping parsing error:", e);
-        }
-      }
-
-      // Price Extraction
-      let priceDisplay = "N/A";
-      let listPrice = "N/A";
-      
-      const priceSelectors = [
-        '.apex-core-price-identifier .a-offscreen',
-        '.apex-pricetopay-value .a-offscreen',
-        '#corePriceDisplay_desktop_feature_div .a-offscreen',
-        '#corePrice_feature_div .a-offscreen',
-        '#apex_desktop_price_feature_div .a-offscreen',
-        '#price_inside_buybox',
-        '#priceblock_ourprice',
-        '#priceblock_dealprice',
-        '.a-price span.a-offscreen'
-      ];
-
-      for (const selector of priceSelectors) {
-        const val = $(selector).first().text().trim();
-        if (val && val !== "N/A") {
-          priceDisplay = val;
-          break;
-        }
-      }
-      
-      // Secondary check for buybox input
-      if (priceDisplay === "N/A") {
-        priceDisplay = $('input[name="items[0.base][customerVisiblePrice][displayString]"]').val() as string || "N/A";
-      }
-
-      // List Price / RRP Extraction
-      const listPriceSelectors = [
-        '.a-price.a-text-price span.a-offscreen',
-        '.basisPrice .a-offscreen',
-        '.a-price-range .a-offscreen',
-        '#listPrice'
-      ];
-
-      for (const selector of listPriceSelectors) {
-        const val = $(selector).first().text().trim();
-        if (val && val !== "N/A") {
-          listPrice = val;
-          break;
         }
       }
 
