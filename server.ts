@@ -714,66 +714,56 @@ async function startServer() {
         });
 
       if (isSearchPage) {
-        console.log('🔎 Search results page detected – waiting for products to render...');
-
-        // Wait for at least one product card to appear before scanning links
-        await page.waitForSelector(
-          '[data-test="product-title"], a[href*="/p/"]:not([href*="javascript"]), .product-title a, .product-item--grid a',
-          { timeout: 15000 }
-        ).catch(() => {
-          console.warn('⚠️ Timed out waiting for product cards – will still attempt to grab a link.');
-        });
-
-        // Give the page a moment for any lazy JS to settle
-        await page.waitForTimeout(1000);
-
-        // ---- Ordered list of selectors to try ----
-        const selectors = [
-          'a[data-test="product-title"]',          // Most specific – Bol's own test ID
-          '[data-test="products-section"] a[href*="/p/"]',
-          '[data-test="product-list"] a[href*="/p/"]',
-          '.product-list a[href*="/p/"]',
-          '.product-item--grid a[href*="/p/"]',
-          '.product-title a',
-          'a[href*="/nl/nl/p/"]:not([href*="javascript"])',
-          'a[href*="/p/"]:not([href*="javascript"])',  // Broadest fallback
-        ];
+        console.log('🔎 Search results page detected – waiting for product link...');
 
         let productHref: string | null = null;
 
-        for (const sel of selectors) {
-          try {
-            productHref = await page.getAttribute(sel, 'href');
-            if (productHref) {
-              console.log(`✅ Found product link via selector: "${sel}"`);
-              break;
+        // 1. Race Condition: Wait for [data-test='product-title'] or a[href*='/p/'] (Max 8 seconds)
+        try {
+          const productLink = await Promise.race([
+            page.waitForSelector("[data-test='product-title'], a[href*='/p/']", { timeout: 8000 }),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 8500)) // Slight buffer to let waitForSelector win if they coincide
+          ]);
+
+          if (productLink) {
+            productHref = await productLink.evaluate((el) => {
+              if (el instanceof HTMLAnchorElement) return el.href;
+              const a = el.closest('a');
+              return a ? a.href : null;
+            });
+            if (productHref) console.log(`✅ Found product link via race: ${productHref}`);
+          }
+        } catch (e) {
+          console.warn('⚠️ Race condition for product link timed out or failed.');
+        }
+
+        // 2. Fallback: Interactive Click if static href extraction failed
+        if (!productHref) {
+          console.warn('⚠️ Falling back to interactive click on first available product element.');
+          const productEl = await page.$("[data-test='product-title'], a[href*='/p/']");
+          if (productEl) {
+            try {
+              await Promise.all([
+                page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }),
+                productEl.click()
+              ]);
+              productHref = page.url();
+              console.log(`✅ Click fallback reached product page: ${productHref}`);
+            } catch (err) {
+              console.warn('⚠️ Click fallback navigation failed.');
             }
-          } catch (_) {
-            // selector not present – try next one
           }
         }
 
-        // If selector list failed, scan the DOM manually for any link containing '/p/'
+        // 3. Last Resort: Scan full DOM for any /p/ link
         if (!productHref) {
-          console.warn('⚠️ Selector list exhausted – attempting click fallback on first product element.');
-          const productEl = await page.$('a[data-test="product-title"], a[href*="/p/"]:not([href*="javascript"])');
-          if (productEl) {
-            // Click the element and wait for navigation
-            await Promise.all([
-              page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 45000 }),
-              productEl.click()
-            ]);
-            productHref = page.url();
-            console.log(`✅ Click fallback navigated to product page: ${productHref}`);
-          } else {
-            // As a last resort, evaluate full DOM for any /p/ link
-            console.warn('⚠️ Click fallback failed – scanning full DOM for any /p/ link...');
-            productHref = await page.evaluate(() => {
-              const anchors = Array.from(document.querySelectorAll('a'));
-              const candidate = anchors.find(a => a.href && a.href.includes('/p/') && !a.href.includes('javascript'));
-              return candidate ? candidate.getAttribute('href') : null;
-            });
-          }
+          console.warn('⚠️ Scanning full DOM for any candidate /p/ links...');
+          productHref = await page.evaluate(() => {
+            const anchors = Array.from(document.querySelectorAll('a'));
+            const candidate = anchors.find(a => a.href && a.href.includes('/p/') && !a.href.includes('javascript'));
+            return candidate ? candidate.getAttribute('href') : null;
+          });
+          if (productHref) console.log(`✅ Found product link via DOM scan: ${productHref}`);
         }
 
         if (!productHref) {
