@@ -753,16 +753,27 @@ async function startServer() {
           }
         }
 
-        // If selector list failed, scan the DOM manually
+        // If selector list failed, scan the DOM manually for any link containing '/p/'
         if (!productHref) {
-          console.warn('⚠️ Selector list exhausted – scanning full DOM for any /p/ link...');
-          productHref = await page.evaluate(() => {
-            const anchors = Array.from(document.querySelectorAll('a'));
-            const candidate = anchors.find(a =>
-              a.href && a.href.includes('/p/') && !a.href.includes('javascript')
-            );
-            return candidate ? candidate.getAttribute('href') : null;
-          });
+          console.warn('⚠️ Selector list exhausted – attempting click fallback on first product element.');
+          const productEl = await page.$('a[data-test="product-title"], a[href*="/p/"]:not([href*="javascript"])');
+          if (productEl) {
+            // Click the element and wait for navigation
+            await Promise.all([
+              page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 45000 }),
+              productEl.click()
+            ]);
+            productHref = page.url();
+            console.log(`✅ Click fallback navigated to product page: ${productHref}`);
+          } else {
+            // As a last resort, evaluate full DOM for any /p/ link
+            console.warn('⚠️ Click fallback failed – scanning full DOM for any /p/ link...');
+            productHref = await page.evaluate(() => {
+              const anchors = Array.from(document.querySelectorAll('a'));
+              const candidate = anchors.find(a => a.href && a.href.includes('/p/') && !a.href.includes('javascript'));
+              return candidate ? candidate.getAttribute('href') : null;
+            });
+          }
         }
 
         if (!productHref) {
