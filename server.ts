@@ -186,7 +186,14 @@ async function startServer() {
         if (src.startsWith('http')) images.push(src);
       });
 
-      const uniqueImages = getUniqueImages(images);
+      let uniqueImages = getUniqueImages(images);
+      
+      // Specifically for Amazon: Skip the image at index 1 (the second image) 
+      // to avoid duplication with index 0 (main image).
+      if (uniqueImages.length > 1) {
+        console.log("Amazon extraction: Skipping image at index 1 to avoid duplication.");
+        uniqueImages = [uniqueImages[0], ...uniqueImages.slice(2)];
+      }
 
       // A+ Content Extraction (Exclude Brand Stories)
       const aPlusContainer = $('.aplus-v2, #aplus, #premium-aplus').not('#brandStory_feature_div, .aplus-brand-story-v2, .aplus-brand-story-v1');
