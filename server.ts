@@ -1320,13 +1320,17 @@ async function startServer() {
     const liveFirst = auditResult.images?.live?.[0] || "";
     const allLiveImages = (auditResult.images?.live || []).join(", ");
     
+    const descriptionMatchValue = (mode === 'amazon' && auditResult.hasAPlus.live)
+      ? "A+ content available"
+      : getMatchText(auditResult.description.match);
+
     const sharedData: any = {
       "Identifier": identifier,
       "SKU": identifier,
       "Title match": getMatchText(auditResult.title.match),
       "Title Match": getMatchText(auditResult.title.match),
-      "Description match": getMatchText(auditResult.description.match),
-      "Description Match": getMatchText(auditResult.description.match),
+      "Description match": descriptionMatchValue,
+      "Description Match": descriptionMatchValue,
       "Main Image Link": masterFirst,
       "Live Image Links": allLiveImages,
       "Main Image": masterFirst ? `=IMAGE("${masterFirst}")` : "",
