@@ -795,8 +795,6 @@ async function startServer() {
       await page.waitForSelector('[data-test="title"], div#pdp_main_section, h1.page-title, #buyBlockSlot, #pdp_description', { timeout: 15000 }).catch(() => {
         console.warn("Product title or description not found within 15s, page might be slow or not a product page.");
       });
-        console.warn("Product title not found within 15s, page might be slow or not a product page.");
-      });
 
       // Scroll 400px immediately after title is confirmed to wake up lazy-loaded description and A+ modules
       await page.evaluate(() => { window.scrollBy(0, 400); });
