@@ -24,12 +24,12 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
 
   // API Routes
-  
+
   // 1. Fetch Google Sheet Data
   app.post("/api/sheets/fetch", async (req, res) => {
     try {
       const { sheetId, sheetName } = req.body;
-      
+
       const serviceAccountEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
       const privateKey = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n');
 
@@ -45,17 +45,17 @@ async function startServer() {
 
       const doc = new GoogleSpreadsheet(sheetId, auth);
       await doc.loadInfo();
-      
+
       const sheet = sheetName ? doc.sheetsByTitle[sheetName] : doc.sheetsByIndex[0];
-      
+
       if (!sheet) {
-        return res.status(404).json({ 
-          error: `Sheet "${sheetName || 'at index 0'}" not found in spreadsheet. Available sheets: ${Object.keys(doc.sheetsByTitle).join(', ')}` 
+        return res.status(404).json({
+          error: `Sheet "${sheetName || 'at index 0'}" not found in spreadsheet. Available sheets: ${Object.keys(doc.sheetsByTitle).join(', ')}`
         });
       }
 
       const rows = await sheet.getRows();
-      
+
       const data = rows.map(row => row.toObject());
       res.json({ data, title: doc.title });
     } catch (error: any) {
@@ -71,8 +71,8 @@ async function startServer() {
       const { asin, marketplace, masterData } = req.body;
       const domain = marketplace || 'amazon.com';
       const url = `https://www.${domain}/dp/${asin}`;
-      
-      browser = await chromiumExtra.launch({ 
+
+      browser = await chromiumExtra.launch({
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
       });
@@ -86,7 +86,7 @@ async function startServer() {
         { name: 'session-id', value: '123-4567890-1234567', domain: `.${domain}`, path: '/' },
         { name: 'ubid-main', value: '123-4567890-1234567', domain: `.${domain}`, path: '/' }
       ];
-      
+
       if (domain.endsWith('.co.uk')) {
         cookies.push({ name: 'lc-main', value: 'en_GB', domain: `.${domain}`, path: '/' });
         cookies.push({ name: 'i18n-prefs', value: 'GBP', domain: `.${domain}`, path: '/' });
@@ -106,7 +106,7 @@ async function startServer() {
       } else {
         cookies.push({ name: 'lc-main', value: 'en_US', domain: `.${domain}`, path: '/' });
       }
-      
+
       await context.addCookies(cookies);
       const page = await context.newPage();
 
@@ -132,21 +132,21 @@ async function startServer() {
           throw e;
         }
       }
-      
+
       // Ensure the product title is at least present
       await page.waitForSelector('#productTitle', { timeout: 15000 }).catch(() => {
         console.warn("Product title not found within 15s, page might be slow or blocked.");
       });
-      
+
       // Check for CAPTCHA
-      const isCaptcha = await page.evaluate(function() {
+      const isCaptcha = await page.evaluate(function () {
         // @ts-ignore
         if (typeof __name === 'undefined') { (window as any).__name = (t: any, v: any) => t; }
-        return document.title.includes('Robot Check') || 
-               document.body.innerText.includes('Type the characters you see in this image') ||
-               document.body.innerText.includes('To discuss automated access to Amazon data please contact');
+        return document.title.includes('Robot Check') ||
+          document.body.innerText.includes('Type the characters you see in this image') ||
+          document.body.innerText.includes('To discuss automated access to Amazon data please contact');
       });
-      
+
       if (isCaptcha) {
         throw new Error("Amazon blocked the request with a CAPTCHA. Please try again later.");
       }
@@ -156,11 +156,11 @@ async function startServer() {
       let $ = cheerio.load(content);
 
       // --- PHASE 1: TOP-PAGE DATA (Price & Shipping) ---
-      
+
       // Price Extraction
       let priceDisplay = "N/A";
       let listPrice = "N/A";
-      
+
       const priceSelectors = [
         'span.a-offscreen', // High priority as requested
         '#corePriceDisplay_desktop_feature_div .a-offscreen',
@@ -179,7 +179,7 @@ async function startServer() {
           break;
         }
       }
-      
+
       // Shipping Extraction (Prioritize mir-layout-DELIVERY_BLOCK)
       const deliverySelectors = [
         '#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE',
@@ -188,15 +188,15 @@ async function startServer() {
         '#deliveryBlockMessage',
         '#pfd-desktop-PRIMARY_DELIVERY_MESSAGE_LARGE'
       ];
-      
+
       let rawShippingTime = "N/A";
       for (const selector of deliverySelectors) {
         const el = $(selector);
         if (el.length) {
-          rawShippingTime = el.find('[data-csa-c-delivery-time]').attr('data-csa-c-delivery-time') || 
-                           el.attr('data-csa-c-delivery-time') || 
-                           el.find('.a-text-bold').first().text().trim() || 
-                           el.text().trim();
+          rawShippingTime = el.find('[data-csa-c-delivery-time]').attr('data-csa-c-delivery-time') ||
+            el.attr('data-csa-c-delivery-time') ||
+            el.find('.a-text-bold').first().text().trim() ||
+            el.text().trim();
           if (rawShippingTime && rawShippingTime.length > 3) break;
         }
       }
@@ -209,7 +209,7 @@ async function startServer() {
       console.log("Scrolling for A+ content and images...");
       await page.mouse.wheel(0, 800);
       await page.waitForTimeout(3000);
-      
+
       // Re-load content for hydrated elements
       content = await page.content();
       $ = cheerio.load(content);
@@ -226,7 +226,7 @@ async function startServer() {
             return (wb * hb) - (wa * ha);
           });
           if (sorted[0]) images.push(sorted[0]);
-        } catch(e) { console.warn('Failed to parse data-a-dynamic-image'); }
+        } catch (e) { console.warn('Failed to parse data-a-dynamic-image'); }
       }
 
       // Strategy B: data-old-hires on landing image
@@ -240,7 +240,7 @@ async function startServer() {
       });
 
       let uniqueImages = getUniqueImages(images);
-      
+
       // Specifically for Amazon: Skip the image at index 1 (the second image) 
       // to avoid duplication with index 0 (main image).
       if (uniqueImages.length > 1) {
@@ -250,13 +250,13 @@ async function startServer() {
 
       // A+ Content Extraction (Exclude Brand Stories)
       const aPlusContainer = $('.aplus-v2, #aplus, #premium-aplus').not('#brandStory_feature_div, .aplus-brand-story-v2, .aplus-brand-story-v1');
-      
+
       // Remove Brand Story sections if they exist within the container
       aPlusContainer.find('.aplus-brand-story-v2, .aplus-brand-story-v1, #brandStory_feature_div, .premium-brand-story, [class*="brand-story"]').remove();
-      
+
       const hasAPlus = aPlusContainer.length > 0;
       let amazonDesc = $('#productDescription').text().trim();
-      
+
       // Extract A+ text ONLY (Simpler revert)
       let aPlusData = null;
       if (hasAPlus) {
@@ -265,7 +265,7 @@ async function startServer() {
           if ($(el).closest('.aplus-brand-story-v2, .aplus-brand-story-v1, #brandStory_feature_div, .premium-brand-story, [class*="brand-story"]').length > 0) return '';
           return $(el).text().trim();
         }).get().filter(t => t.length > 0).join('\n\n');
-        
+
         aPlusData = { text: aPlusText };
       }
 
@@ -279,7 +279,7 @@ async function startServer() {
       // Shipping parsing using the rawShippingTime extracted in Phase 1
       let shippingDaysNum = 0;
       let shippingDaysStr = "N/A";
-      
+
       if (rawShippingTime && rawShippingTime !== "N/A") {
         try {
           const today = new Date();
@@ -290,7 +290,7 @@ async function startServer() {
           // Multi-language month maps
           const monthMap: Record<string, number> = {
             // English
-            'january': 0, 'february': 1, 'march': 2, 'april': 3, 'may': 4, 'june': 5, 
+            'january': 0, 'february': 1, 'march': 2, 'april': 3, 'may': 4, 'june': 5,
             'july': 6, 'august': 7, 'september': 8, 'october': 9, 'november': 10, 'december': 11,
             'jan': 0, 'feb': 1, 'mar': 2, 'apr': 3, 'may': 4, 'jun': 5, 'jul': 6, 'aug': 7, 'sep': 8, 'oct': 9, 'nov': 10, 'dec': 11,
             // Dutch (Amazon.nl)
@@ -306,7 +306,7 @@ async function startServer() {
           };
 
           const s = rawShippingTime.toLowerCase();
-          
+
           // Check for "Tomorrow" in various languages
           if (/tomorrow|morgen|jutro|i morgon/i.test(s)) {
             targetDate = new Date(today);
@@ -328,7 +328,7 @@ async function startServer() {
             if (dayMatch && monthIndex !== -1) {
               const day = parseInt(dayMatch[1]);
               targetDate = new Date(currentYear, monthIndex, day);
-              
+
               // Handle year rollover (e.g., today is Dec 30, and delivery is Jan 2)
               if (targetDate.getTime() < today.getTime() - (30 * 24 * 60 * 60 * 1000)) {
                 targetDate.setFullYear(currentYear + 1);
@@ -385,14 +385,14 @@ async function startServer() {
           break;
         }
       }
-      
+
       // Fallback: check for any element with "variation" in ID or class inside a twister container
       if (!hasVariations) {
         if ($('[id*="variation"], [class*="variation"]').length > 0 && ($('#twister-main-container, #twister').length > 0 || $('.twister-row').length > 0)) {
           hasVariations = true;
         }
       }
-      
+
       // Additional check for labels which often indicate variations across all categories
       if (!hasVariations) {
         const twisterText = $('#twister-main-container, #twister, #variation_type, #variation_name').text().toLowerCase();
@@ -433,7 +433,7 @@ async function startServer() {
           hasVariations = true;
         }
       }
-      
+
       // Final check: look for any list or select inside twister that has more than one option
       if (!hasVariations) {
         const twisterOptions = $('#twister-main-container select option, #twister-main-container ul li').length;
@@ -455,11 +455,11 @@ async function startServer() {
       primaryBulletSelectors.forEach(s => {
         $(s).each((_, el) => {
           const text = $(el).text().trim();
-          if (text.length > 2 && 
-              !text.includes('See more photos') && 
-              !text.includes('Check details') && 
-              !text.includes('See more') &&
-              !amazonBullets.includes(text)) {
+          if (text.length > 2 &&
+            !text.includes('See more photos') &&
+            !text.includes('Check details') &&
+            !text.includes('See more') &&
+            !amazonBullets.includes(text)) {
             amazonBullets.push(text);
           }
         });
@@ -485,7 +485,7 @@ async function startServer() {
       res.json({ liveData, auditResult });
     } catch (error: any) {
       console.error("Amazon Audit Error:", error);
-      res.status(500).json({ 
+      res.status(500).json({
         error: error.message || "An unexpected error occurred during Amazon audit",
         details: error.stack,
         name: error.name
@@ -501,202 +501,71 @@ async function startServer() {
     try {
       const { ean, masterData } = req.body;
       const searchUrl = `https://www.bol.com/nl/nl/s/?searchtext=${ean}`;
-      
+
       console.log(`Starting Bol Audit for EAN: ${ean}`);
-      
-      const launchOptions: any = { 
+
+      const launchOptions: any = {
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
       };
-      
-      // Configure Residential Proxy for Bol.com
-      const resProxyUrl = process.env.RESIDENTIAL_PROXY_URL;
-      const resProxyPass = process.env.PROXY_PASSWORD;
 
-      if (resProxyUrl) {
-        launchOptions.proxy = {
-          server: resProxyUrl,
-          username: 'residential-nl', // Target NL
-          password: resProxyPass
-        };
-        console.log("Using Residential Proxy tunnel for Bol.com (NL)");
-      } else if (process.env.ANTIGRAVITY_API_KEY) {
-        launchOptions.proxy = {
-          server: `http://${process.env.ANTIGRAVITY_API_KEY}:residential-nl@proxy.antigravityai.com:8080`
-        };
-        console.log("Using Antigravity NL Residential Proxy for Bol.com");
-      } else if (process.env.PROXY_SERVER) {
-        launchOptions.proxy = {
-          server: process.env.PROXY_SERVER,
-          username: process.env.PROXY_USERNAME,
-          password: process.env.PROXY_PASSWORD
-        };
-        console.log("Using standard proxy for Bol.com");
-      }
-      
       browser = await chromiumExtra.launch(launchOptions);
-      
-      // Rotate user agents
-      const userAgents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
-      ];
-      const selectedUA = userAgents[Math.floor(Math.random() * userAgents.length)];
-      
-      // Randomize viewport slightly to avoid fingerprinting
-      const viewportWidth = 1920 + Math.floor(Math.random() * 100) - 50;
-      const viewportHeight = 1080 + Math.floor(Math.random() * 100) - 50;
-      
+
+      // STEALTH OVERHAUL: No proxy, focused on automation masking and language spoofing
       const context = await browser.newContext({
-        incognito: true,
-        // Mimic standard Windows 11 Chrome browser
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         viewport: { width: 1920, height: 1080 },
+        locale: 'nl-NL', // Language Spoofing
         extraHTTPHeaders: {
           'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-          'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-          'Sec-Ch-Ua-Mobile': '?0',
-          'Sec-Ch-Ua-Platform': '"Windows"',
         }
       });
 
-      // Set cookies for language and country
-      await context.addCookies([
-        { name: 'cookie_consent', value: 'true', domain: '.bol.com', path: '/' },
-        { name: 'bol_gdpr_consent', value: 'yes', domain: '.bol.com', path: '/' },
-        { name: 'nl_NL', value: 'true', domain: '.bol.com', path: '/' },
-        { name: 'language', value: 'nl-NL', domain: '.bol.com', path: '/' },
-        { name: 'country', value: 'NL', domain: '.bol.com', path: '/' },
-        { name: 'bol_p_incognito', value: 'true', domain: '.bol.com', path: '/' }
-      ]);
+      // Automation Masking: Makes Bol.com think a human is browsing
+      await context.addInitScript(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => false });
+      });
 
       let page = await context.newPage();
-      
-      // Add request/response logging for debugging
-      page.on('response', response => {
-        if (response.status() >= 400) {
-          console.warn(`Response ${response.status()} for ${response.url()}`);
-        }
-      });
-      
-      // Inject stealth scripts before navigation (Playwright uses addInitScript, NOT evaluateOnNewDocument)
-      // Playwright Stealth Fix: Force browser signatures
-      await context.addInitScript(() => {
-        // @ts-ignore
-        Object.defineProperty(navigator, 'webdriver', { get: () => false });
-        // @ts-ignore
-        window.chrome = { runtime: {} };
-        // Spoof language to Dutch to match Residential IP
-        // @ts-ignore
-        Object.defineProperty(navigator, 'languages', { get: () => ['nl-NL', 'nl'] });
-      });
-      
-      // Navigate to search results with retries and intelligent delays
+
+      // Navigate to search results with RECOVERY retry logic
       console.log(`Navigating to: ${searchUrl}`);
       let navigationSuccess = false;
-      let lastError: any;
-      
-      for (let attempt = 1; attempt <= 3; attempt++) {
+
+      for (let attempt = 1; attempt <= 2; attempt++) {
         try {
-          const preDelay = Math.random() * 3000 + 2000;
-          await page.waitForTimeout(preDelay);
-          
-          console.log(`Navigation attempt ${attempt} to ${searchUrl}`);
           await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
           
           const pageSource = await page.content();
-          if (pageSource.includes("IP adres is geblokkeerd")) {
-            console.error(`❌ Blocked on attempt ${attempt}: IP adres is geblokkeerd`);
-            if (attempt < 3) {
-              console.log("Terminating current page to rotate proxy session...");
-              await page.close();
-              // Reassign the 'page' variable to a new page instance
-              page = await context.newPage();
-              
-              // Re-inject stealth signatures on the new page
-              await page.addInitScript(() => {
-                // @ts-ignore
-                Object.defineProperty(navigator, 'webdriver', { get: () => false });
-                // @ts-ignore
-                window.chrome = { runtime: {} };
-                // @ts-ignore
-                Object.defineProperty(navigator, 'languages', { get: () => ['nl-NL', 'nl'] });
-              });
-              
-              throw new Error("BLOCK: IP adres is geblokkeerd - Retrying with new session");
+          if (pageSource.includes("IP adres is geblokkeerd") || pageSource.includes("rustig aan speed racer")) {
+            console.error(`❌ Blocked on attempt ${attempt}`);
+            if (attempt === 1) {
+              console.log("RECOVERY: Waiting 5 seconds and trying the search one more time...");
+              await page.waitForTimeout(5000);
+              continue;
+            } else {
+              throw new Error("Bol.com appears to be blocking the request after retry.");
             }
           }
 
           navigationSuccess = true;
-          console.log(`Navigation successful on attempt ${attempt}`);
           break;
         } catch (e: any) {
-          lastError = e;
-          console.warn(`Navigation attempt ${attempt} failed: ${e.message}`);
-          if (attempt < 3) {
-            const backoffDelay = 5000 * attempt;
-            await page.waitForTimeout(backoffDelay);
+          if (attempt === 1) {
+            await page.waitForTimeout(5000);
+          } else {
+            throw e;
           }
         }
       }
-      
+
       if (!navigationSuccess) {
-        throw new Error(`Failed to navigate to BOL after 3 attempts: ${lastError?.message}`);
+        throw new Error(`Failed to navigate to BOL after retry.`);
       }
-      
-      // Add longer random delay after navigation to avoid rate limiting
-      await page.waitForTimeout(Math.random() * 3000 + 2000);
-      
-      // Check for CAPTCHA or blocking
-      const blockStatus = await page.evaluate(function() {
-        // @ts-ignore
-        if (typeof __name === 'undefined') { (window as any).__name = (t: any, v: any) => t; }
-        const text = document.body.innerText.toLowerCase();
-        const html = document.documentElement.innerHTML.toLowerCase();
-        const title = document.title.toLowerCase();
-        
-        // Check for explicit blocking indicators
-        const hasBlockTitle = title.includes('robot check') || 
-                              title.includes('access denied') ||
-                              title.includes('blocked');
-        
-        const hasBlockText = text.includes('type the characters you see') ||
-                             text.includes('ben je een robot?') ||
-                             text.includes('rustig aan speed racer') ||
-                             text.includes('je gaat iets te snel') ||
-                             text.includes('geblokkeerd');
-        
-        const hasBlockHtml = html.includes('429') || html.includes('403');
-        
-        // Check if we have actual product content
-        const hasContent = text.length > 500 && 
-                          (text.includes('€') || 
-                           text.includes('prijs') || 
-                           text.includes('price') ||
-                           document.querySelector('h1, [data-test="title"]'));
-        
-        return {
-          isBlocked: (hasBlockTitle || hasBlockText || hasBlockHtml) && !hasContent,
-          hasContent: hasContent,
-          textLength: text.length
-        };
-      });
 
-      console.log(`Block Status: ${JSON.stringify(blockStatus)}`);
-
-      // Only throw error if truly blocked AND we don't have content
-      if (blockStatus.isBlocked && !blockStatus.hasContent) {
-        throw new Error("Bol.com appears to be blocking the request. Content not loaded.");
-      }
-      
-      // If we have some concerns but also have content, proceed with warning
-      if (blockStatus.hasContent) {
-        console.log("Warning: Some block indicators detected but content was loaded. Proceeding with extraction...");
-      }
+      // HUMAN INTERACTION: Wait 3 seconds before clicking the product
+      await page.waitForTimeout(3000);
 
       // ---------------------------------------------------------------
       // Detect search-result page and navigate to first product link
@@ -808,7 +677,7 @@ async function startServer() {
       await page.waitForLoadState('networkidle', { timeout: 45000 }).catch(() => {
         console.warn("Network idle timeout, proceeding with current state.");
       });
-      
+
       // Human-Mimicry: Force scroll event to trigger lazy-loaded description and modules
       console.log("Human mimicry: scrolling PDP...");
       await page.mouse.wheel(0, 400);
@@ -821,7 +690,7 @@ async function startServer() {
       const pageLoaded = await page.evaluate(() => {
         return document.body.innerText && document.body.innerText.length > 100;
       });
-      
+
       if (!pageLoaded) {
         throw new Error("Page content did not load properly. Possible block or network issue.");
       }
@@ -832,11 +701,11 @@ async function startServer() {
       // Scroll to media container to trigger lazy loading
       await page.evaluate(() => {
         const media = document.querySelector('[data-test="product-main-image"]') ||
-                      document.querySelector('.js_product_media_items') || 
-                      document.querySelector('.pdp-images') || 
-                      document.querySelector('.buy-block') ||
-                      document.querySelector('[class*="ProductImage"]') ||
-                      document.querySelector('[id*="image"]');
+          document.querySelector('.js_product_media_items') ||
+          document.querySelector('.pdp-images') ||
+          document.querySelector('.buy-block') ||
+          document.querySelector('[class*="ProductImage"]') ||
+          document.querySelector('[id*="image"]');
         if (media) {
           media.scrollIntoView();
           // Scroll a bit more to ensure thumbnails are triggered
@@ -850,40 +719,40 @@ async function startServer() {
       // Wait for media container specifically
       await page.waitForSelector('[data-test="product-main-image"], .js_product_media_items, .pdp-images, [class*="ProductImage"], img', { timeout: 10000 }).catch(() => null);
 
-      const liveDataRaw = await page.evaluate(function() {
+      const liveDataRaw = await page.evaluate(function () {
         // @ts-ignore
         if (typeof __name === 'undefined') { (window as any).__name = (t: any, v: any) => t; }
-        
+
         // 1. Title
         let title = document.title.split('|')[0].trim();
         if (!title || title.length < 5) {
           const elTitle = document.querySelector('[data-test="title"]') || document.querySelector('h1.page-title') || document.querySelector('h1');
           title = elTitle ? (elTitle as any).innerText.trim() : "";
         }
-        
+
         // 2. Description
         let description = "";
-        
+
         // ... (rest of description logic remains unchanged) ...
         const headings = Array.from(document.querySelectorAll('h2, h3, h4, b, strong, span'));
         const descHeading = headings.find(h => {
           const t = (h as any).innerText || (h as any).textContent || "";
           return t.includes('Productbeschrijving') || t.includes('Product description');
         });
-        
+
         if (descHeading) {
-           const parent = descHeading.closest('section') || descHeading.parentElement;
-           if (parent) {
-              const clone = parent.cloneNode(true) as HTMLElement;
-              const UI_SELECTORS = ['.js_description_read_more', '[data-test="read-more"]', '.pdp-description__read-more', 'button', 'a.button--link'];
-              UI_SELECTORS.forEach(sel => {
-                clone.querySelectorAll(sel).forEach(btn => btn.remove());
-              });
-              const text = (clone as any).innerText || (clone as any).textContent || "";
-              description = text.replace(/Productbeschrijving|Product description/i, '').trim();
-              // Global clean for UI fragments
-              description = description.replace(/toon meer|toon minder/gi, '').trim();
-           }
+          const parent = descHeading.closest('section') || descHeading.parentElement;
+          if (parent) {
+            const clone = parent.cloneNode(true) as HTMLElement;
+            const UI_SELECTORS = ['.js_description_read_more', '[data-test="read-more"]', '.pdp-description__read-more', 'button', 'a.button--link'];
+            UI_SELECTORS.forEach(sel => {
+              clone.querySelectorAll(sel).forEach(btn => btn.remove());
+            });
+            const text = (clone as any).innerText || (clone as any).textContent || "";
+            description = text.replace(/Productbeschrijving|Product description/i, '').trim();
+            // Global clean for UI fragments
+            description = description.replace(/toon meer|toon minder/gi, '').trim();
+          }
         }
 
         if (!description || description.length < 50) {
@@ -902,7 +771,7 @@ async function startServer() {
             '.product-info',      // Bol A+ equivalent
             '[data-test="product-info"]'
           ];
-          
+
           // Try to expand "Lees meer" if it exists
           const readMore = document.querySelector('.js_description_read_more, [data-test="read-more"], .pdp-description__read-more');
           if (readMore) (readMore as any).click();
@@ -911,22 +780,22 @@ async function startServer() {
           for (const s of descSelectors) {
             const el = document.querySelector(s);
             if (el) {
-               const clone = el.cloneNode(true) as HTMLElement;
-               const UI_SELECTORS = ['.js_description_read_more', '[data-test="read-more"]', '.pdp-description__read-more', 'button', 'a.button--link'];
-               UI_SELECTORS.forEach(sel => {
-                 clone.querySelectorAll(sel).forEach(btn => btn.remove());
-               });
-               const text = (clone as any).innerText || (clone as any).textContent || "";
-               if (text.trim().length > 20) {
-                  let html = clone.innerHTML;
-                  let t = html.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<\/div>/gi, '\n').replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim();
-                  // Secondary cleanup for text fragments
-                  t = t.replace(/toon meer|toon minder/gi, '').trim();
-                  
-                  if (!pooledText.includes(t)) {
-                    pooledText += (pooledText ? "\n\n" : "") + t;
-                  }
-               }
+              const clone = el.cloneNode(true) as HTMLElement;
+              const UI_SELECTORS = ['.js_description_read_more', '[data-test="read-more"]', '.pdp-description__read-more', 'button', 'a.button--link'];
+              UI_SELECTORS.forEach(sel => {
+                clone.querySelectorAll(sel).forEach(btn => btn.remove());
+              });
+              const text = (clone as any).innerText || (clone as any).textContent || "";
+              if (text.trim().length > 20) {
+                let html = clone.innerHTML;
+                let t = html.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<\/div>/gi, '\n').replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim();
+                // Secondary cleanup for text fragments
+                t = t.replace(/toon meer|toon minder/gi, '').trim();
+
+                if (!pooledText.includes(t)) {
+                  pooledText += (pooledText ? "\n\n" : "") + t;
+                }
+              }
             }
           }
           if (pooledText) description = pooledText;
@@ -934,7 +803,7 @@ async function startServer() {
 
         // 3. Price (Prioritize LD+JSON as requested)
         let price = "N/A";
-        
+
         try {
           const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'));
           for (const script of scripts) {
@@ -948,7 +817,7 @@ async function startServer() {
                 if (obj["@type"] === "Offer") return obj.price || null;
                 return null;
               };
-              
+
               if (Array.isArray(data)) {
                 for (const item of data) {
                   const p = findPrice(item);
@@ -959,9 +828,9 @@ async function startServer() {
                 if (p) price = String(p);
               }
               if (price !== "N/A") break;
-            } catch(e) {}
+            } catch (e) { }
           }
-        } catch(e) {}
+        } catch (e) { }
 
         if (price === "N/A") {
           // Try multiple comprehensive selectors for BOL price
@@ -978,7 +847,7 @@ async function startServer() {
             'div[class*="price-content"]',
             '[data-element-type="price"]'
           ];
-          
+
           for (const selector of priceSelectors) {
             const priceEl = document.querySelector(selector);
             if (priceEl) {
@@ -992,7 +861,7 @@ async function startServer() {
               }
             }
           }
-          
+
           // Fallback: search in all text
           if (price === "N/A") {
             const allText = document.body.innerText;
@@ -1003,7 +872,7 @@ async function startServer() {
 
         // 4. Shipping (JSON-LD + User snippet indicators)
         let shippingText = "N/A";
-        
+
         try {
           const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'));
           for (const script of scripts) {
@@ -1017,12 +886,12 @@ async function startServer() {
                 }
                 return null;
               };
-              
+
               const s = Array.isArray(data) ? data.map(findShipping).find(x => x) : findShipping(data);
               if (s) { shippingText = s; break; }
-            } catch(e) {}
+            } catch (e) { }
           }
-        } catch(e) {}
+        } catch (e) { }
 
         if (shippingText === "N/A") {
           // Try multiple comprehensive selectors for BOL shipping
@@ -1037,7 +906,7 @@ async function startServer() {
             '[data-element-type="delivery"]',
             'span[itemprop="deliveryTime"]'
           ];
-          
+
           for (const selector of shippingSelectors) {
             const shippingEl = document.querySelector(selector);
             if (shippingEl) {
@@ -1048,21 +917,21 @@ async function startServer() {
               }
             }
           }
-          
+
           // Fallback: search in body text for date patterns
           if (shippingText === "N/A") {
             const bodyText = document.body.innerText;
-            const uiterlijkMatch = bodyText.match(/Uiterlijk\s+(.+?)(?:\s+in\s+huis|$)/i) || 
-                                   bodyText.match(/Morgen\s+in\s+huis/i) ||
-                                   bodyText.match(/Vandaag\s+.*?(?:in|om)/i) ||
-                                   bodyText.match(/Bezorging:\s+(.+?)(?:\n|$)/i);
+            const uiterlijkMatch = bodyText.match(/Uiterlijk\s+(.+?)(?:\s+in\s+huis|$)/i) ||
+              bodyText.match(/Morgen\s+in\s+huis/i) ||
+              bodyText.match(/Vandaag\s+.*?(?:in|om)/i) ||
+              bodyText.match(/Bezorging:\s+(.+?)(?:\n|$)/i);
             if (uiterlijkMatch) shippingText = uiterlijkMatch[0] || uiterlijkMatch[1] || "N/A";
           }
         }
 
         // 5. Images (Revised extraction to avoid empty results)
         let images: string[] = [];
-        
+
         // Strategy 1: Preload tags (Often has high-res URLs)
         try {
           const preloads = Array.from(document.querySelectorAll('link[rel="preload"][as="image"]'));
@@ -1070,7 +939,7 @@ async function startServer() {
             const href = link.getAttribute('href');
             if (href && href.includes('media.s-bol.com')) images.push(href);
           });
-        } catch(e) {}
+        } catch (e) { }
 
         // Strategy 2: Main image selectors
         const mainSelectors = [
@@ -1079,14 +948,14 @@ async function startServer() {
           '.pdp-main-image img',
           'img.js_main_product_image'
         ];
-        for(const s of mainSelectors) {
+        for (const s of mainSelectors) {
           const img = document.querySelector(s);
           if (img) {
             const src = (img as any).src || img.getAttribute('src');
             if (src && src.startsWith('http')) images.push(src);
           }
         }
-        
+
         // Strategy 3: Thumbnails
         const thumbSelectors = [
           '.js_product_media_items img',
@@ -1094,7 +963,7 @@ async function startServer() {
           '.js_image_container img',
           '.product-images__item img'
         ];
-        for(const s of thumbSelectors) {
+        for (const s of thumbSelectors) {
           const thumbs = Array.from(document.querySelectorAll(s));
           thumbs.forEach(img => {
             const src = (img as any).src || img.getAttribute('data-src') || img.getAttribute('src');
@@ -1103,13 +972,13 @@ async function startServer() {
             }
           });
         }
-        
+
         // 6. Variations & A+
         const hasVariations = !!(
-          document.querySelector('[data-test="variant-selector"]') || 
+          document.querySelector('[data-test="variant-selector"]') ||
           document.querySelector('[data-test="product-variant"]') ||
           document.querySelector('[data-test="attribute-selector"]') ||
-          document.querySelector('.variant-selector') || 
+          document.querySelector('.variant-selector') ||
           document.querySelector('.js_bundle_as_variant_selector') ||
           document.querySelector('[data-test="variant-dropdown"]') ||
           document.querySelector('.js_variant_selector') ||
@@ -1124,10 +993,10 @@ async function startServer() {
           Array.from(document.querySelectorAll('button, span, div, h3, label, select')).some(el => {
             const t = ((el as any).innerText || "").toLowerCase();
             const themes = [
-              'kies je kleur', 
-              'kies je maat', 
-              'kies je variant', 
-              'kies je bestanddeel', 
+              'kies je kleur',
+              'kies je maat',
+              'kies je variant',
+              'kies je bestanddeel',
               'kies je model',
               'kies je type',
               'kies je uitvoering',
@@ -1153,7 +1022,7 @@ async function startServer() {
             return themes.some(theme => t.includes(theme));
           })
         );
-        
+
         const hasAPlus = !!(
           Array.from(document.querySelectorAll('.js_product_description img, .product-description img, .product-description-content img, [data-test="product-info"] img, .js_product_info img, .manufacturer-info img, .product-info img'))
             .some(img => {
@@ -1175,7 +1044,7 @@ async function startServer() {
           '.specs-list__item',
           '.product-specifications li'
         ];
-        
+
         const extractedSet = new Set<string>();
         for (const s of featureSelectors) {
           const items = document.querySelectorAll(s);
@@ -1228,10 +1097,10 @@ async function startServer() {
               'januari': 0, 'februari': 1, 'maart': 2, 'april': 3, 'mei': 4, 'juni': 5,
               'juli': 6, 'augustus': 7, 'september': 8, 'oktober': 9, 'november': 10, 'december': 11
             };
-            
+
             const dayMatch = s.match(/\d+/);
             const monthMatch = s.match(/[a-z]+/g) || [];
-            
+
             let targetDate: Date | null = null;
             if (dayMatch) {
               const day = parseInt(dayMatch[0]);
@@ -1246,7 +1115,7 @@ async function startServer() {
                 targetDate = new Date(currentYear, monthIndex, day);
               }
             }
-            
+
             if (targetDate) {
               targetDate.setHours(0, 0, 0, 0);
               const todayClean = new Date();
@@ -1256,7 +1125,7 @@ async function startServer() {
               shippingDaysStr = `${shippingDaysNum} Day${shippingDaysNum === 1 ? '' : 's'}`;
             }
           }
-        } catch (e) {}
+        } catch (e) { }
       }
 
       const liveData = {
@@ -1275,7 +1144,7 @@ async function startServer() {
       res.json({ liveData, auditResult });
     } catch (error: any) {
       console.error("Bol Audit Error:", error);
-      res.status(500).json({ 
+      res.status(500).json({
         error: error.message || "An unexpected error occurred during Bol.com audit",
         details: error.stack,
         name: error.name
@@ -1289,11 +1158,11 @@ async function startServer() {
     const getMatchText = (isMatch: boolean) => isMatch ? 'Yes' : 'No';
     const getAPlusText = (hasAPlus: boolean) => hasAPlus ? 'Available' : 'Not Available';
     const getVariationText = (exists: boolean) => exists ? 'Yes' : 'No';
-    
+
     const masterFirst = masterData.images?.[0] || "";
     const liveFirst = auditResult.images?.live?.[0] || "";
     const allLiveImages = (auditResult.images?.live || []).join(", ");
-    
+
     const descriptionMatchValue = (mode === 'amazon' && auditResult.hasAPlus.live)
       ? "A+ content available"
       : getMatchText(auditResult.description.match);
@@ -1309,12 +1178,12 @@ async function startServer() {
       "Live Image Links": allLiveImages,
       "Main Image": masterFirst ? `=IMAGE("${masterFirst}")` : "",
       "Live Image": liveFirst ? `=IMAGE("${liveFirst}")` : "",
-      
+
       // Specific requested mappings Target: "Main Live Image", "Image 1", "Live Image 1"
       "Main Live Image": liveFirst ? `=IMAGE("${liveFirst}")` : "",
-      "Image 1": masterFirst, 
+      "Image 1": masterFirst,
       "Live Image 1": liveFirst,
-      
+
       "A+ Content": getAPlusText(auditResult.hasAPlus.live),
       "A+": getAPlusText(auditResult.hasAPlus.live),
       "Has A+": getAPlusText(auditResult.hasAPlus.live),
@@ -1341,13 +1210,13 @@ async function startServer() {
 
     // Master Images 1-10
     for (let i = 1; i <= 10; i++) {
-      const url = masterImgs[i-1] || "";
+      const url = masterImgs[i - 1] || "";
       sharedData[`${prefix} Master Image ${i}`] = url ? `=IMAGE("${url}")` : "";
     }
 
     // Live Images 1-10
     for (let i = 1; i <= 10; i++) {
-      const url = liveImgs[i-1] || "";
+      const url = liveImgs[i - 1] || "";
       sharedData[`${prefix} Live Image ${i}`] = url ? `=IMAGE("${url}")` : "";
     }
 
@@ -1374,7 +1243,7 @@ async function startServer() {
       const { mode } = req.body;
       const targetSheetId = "1V4lNf30SlBwczSvGX9rfn5eWFH2AvMO4TqMHAHalS7s";
       const targetTab = mode === 'amazon' ? 'Amazon QC Results' : 'Bol QC Results';
-      
+
       const serviceAccountEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
       const privateKey = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n');
 
@@ -1389,13 +1258,13 @@ async function startServer() {
       });
 
       const sheets = google.sheets({ version: 'v4', auth });
-      
+
       // Wipe protocol: Strict Clear A2:AZ1000
       await sheets.spreadsheets.values.clear({
         spreadsheetId: targetSheetId,
         range: `'${targetTab}'!A2:AZ1000`,
       });
-      
+
       res.json({ success: true, message: `Tab "${targetTab}" cleared A2:AZ1000.` });
     } catch (error: any) {
       console.error("Clear Sheet Error:", error);
@@ -1409,7 +1278,7 @@ async function startServer() {
       const { mode, auditResult, masterData, marketplace, identifier } = req.body;
       const targetSheetId = "1V4lNf30SlBwczSvGX9rfn5eWFH2AvMO4TqMHAHalS7s";
       const targetTab = mode === 'amazon' ? 'Amazon QC Results' : 'Bol QC Results';
-      
+
       const serviceAccountEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
       const privateKey = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n');
 
@@ -1427,7 +1296,7 @@ async function startServer() {
       const doc = new GoogleSpreadsheet(targetSheetId, auth);
       await doc.loadInfo();
       const sheet = doc.sheetsByTitle[targetTab];
-      
+
       if (!sheet) {
         return res.status(404).json({ error: `Tab "${targetTab}" not found.` });
       }
@@ -1435,7 +1304,7 @@ async function startServer() {
       await sheet.loadHeaderRow();
       const headers = sheet.headerValues;
       const rowData = prepareRowData(mode, auditResult, masterData, marketplace, identifier);
-      
+
       // Map to header order for batch update
       const rowArray = headers.map(h => {
         const key = Object.keys(rowData).find(k => k.toLowerCase() === h.toLowerCase());
@@ -1457,7 +1326,7 @@ async function startServer() {
           values: [rowArray]
         }
       });
-      
+
       res.json({ success: true, tab: targetTab, overrode: true });
     } catch (error: any) {
       console.error("Save Audit Error:", error);
@@ -1471,7 +1340,7 @@ async function startServer() {
       const { mode, audits } = req.body; // audits is array of { auditResult, masterData, marketplace, identifier }
       const targetSheetId = "1V4lNf30SlBwczSvGX9rfn5eWFH2AvMO4TqMHAHalS7s";
       const targetTab = mode === 'amazon' ? 'Amazon QC Results' : 'Bol QC Results';
-      
+
       const serviceAccountEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
       const privateKey = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n');
 
@@ -1489,7 +1358,7 @@ async function startServer() {
       const doc = new GoogleSpreadsheet(targetSheetId, auth);
       await doc.loadInfo();
       const sheet = doc.sheetsByTitle[targetTab];
-      
+
       if (!sheet) {
         return res.status(404).json({ error: `Tab "${targetTab}" not found.` });
       }
@@ -1519,7 +1388,7 @@ async function startServer() {
           values: allRows
         }
       });
-      
+
       res.json({ success: true, count: allRows.length });
     } catch (error: any) {
       console.error("Batch Save Error:", error);
@@ -1563,13 +1432,13 @@ async function startServer() {
   app.post("/api/images/compare", async (req, res) => {
     try {
       const { url1, url2 } = req.body;
-      
+
       const img1Resp = await axios.get(url1, { responseType: 'arraybuffer' });
       const img2Resp = await axios.get(url2, { responseType: 'arraybuffer' });
-      
+
       const hash1 = await getImageHash(Buffer.from(img1Resp.data));
       const hash2 = await getImageHash(Buffer.from(img2Resp.data));
-      
+
       const similarity = compareHashes(hash1, hash2);
       res.json({ similarity });
     } catch (error: any) {
@@ -1581,19 +1450,19 @@ async function startServer() {
     if (!text) return "";
     // 1. Strip HTML tags
     let cleaned = text.replace(/<[^>]*>?/gm, '');
-    
+
     // 2. Remove raw URLs
     cleaned = cleaned.replace(/https?:\/\/[^\s]+\.(jpg|jpeg|png|gif|webp|svg)/gi, '');
-    
+
     // 3. Normalize diacritics (treat ë as e, etc.)
     cleaned = cleaned.normalize('NFD').replace(/[\u0300-\u036f]/g, "");
-    
+
     // 4. Whitespace Normalization (replace non-breaking spaces etc with standard space)
     cleaned = cleaned.replace(/[\u00A0\u1680\u180E\u2000-\u200B\u202F\u205F\u3000\uFEFF]/g, ' ');
-    
+
     // 5. Aggressive Alphanumeric filter (Removes symbols like ™, ®, ©, bullets, punctuation)
     cleaned = cleaned.replace(/[^a-zA-Z0-9\s]/g, '');
-    
+
     // 6. Normalize casing and multiple spaces
     return cleaned.toLowerCase().trim().replace(/\s+/g, ' ');
   }
@@ -1601,14 +1470,14 @@ async function startServer() {
   function getUniqueImages(urlList: string[]) {
     const idToUrlMap = new Map<string, string>();
     const finalImages: string[] = [];
-    
+
     for (const url of urlList) {
       if (!url || typeof url !== 'string' || !url.startsWith('http')) continue;
-      
+
       let imgId = "";
       let isAmazon = false;
       let processedUrl = url;
-      
+
       if (url.includes('amazon.com') || url.includes('media-amazon.com')) {
         isAmazon = true;
         try {
@@ -1625,17 +1494,17 @@ async function startServer() {
       } else if (url.includes('media.s-bol.com')) {
         const match = url.match(/media\.s-bol\.com\/([A-Za-z0-9_-]+)/);
         if (match) imgId = match[1];
-        
+
         // Normalize Bol URLs to large version
         processedUrl = url.replace(/\/\d+x\d+\//, "/large/")
-                          .replace("/small/", "/large/")
-                          .replace("/slot/", "/large/")
-                          .replace("/thumb/", "/large/")
-                          .replace("/100x100/", "/large/")
-                          .replace("/124x124/", "/large/")
-                          .replace("/140x140/", "/large/")
-                          .replace("/210x210/", "/large/")
-                          .replace("/40x40/", "/large/");
+          .replace("/small/", "/large/")
+          .replace("/slot/", "/large/")
+          .replace("/thumb/", "/large/")
+          .replace("/100x100/", "/large/")
+          .replace("/124x124/", "/large/")
+          .replace("/140x140/", "/large/")
+          .replace("/210x210/", "/large/")
+          .replace("/40x40/", "/large/");
       } else {
         const match = url.match(/\/([A-Za-z0-9_-]{10,20})/);
         if (match) imgId = match[1];
@@ -1673,7 +1542,7 @@ async function startServer() {
 
   function performAudit(master: any, live: any, mode: 'amazon' | 'bol', domain?: string) {
     const results: any = {};
-    
+
     // Title Comparison
     const cleanMasterTitle = cleanText(master.title);
     const cleanLiveTitle = cleanText(live.title);
@@ -1692,7 +1561,7 @@ async function startServer() {
     const cleanMasterDesc = cleanText(master.description);
     const cleanLiveDesc = (isImageDesc || isAPlusImages || isAPlusData) ? "" : cleanText(live.description);
     const descSimilarity = (isImageDesc || isAPlusImages || isAPlusData) ? 0.5 : stringSimilarity.compareTwoStrings(cleanMasterDesc, cleanLiveDesc);
-    
+
     results.description = {
       master: master.description,
       live: live.description,
@@ -1753,7 +1622,7 @@ async function startServer() {
     const liveImages = live.images || [];
     const masterFirst = masterImages[0] || "";
     const liveFirst = liveImages[0] || "";
-    
+
     // Simple match logic: compare first image filename or full URL
     const getFilename = (url: string) => url.split('/').pop()?.split('?')[0] || "";
     const isImageMatch = masterFirst && liveFirst && (masterFirst === liveFirst || getFilename(masterFirst) === getFilename(liveFirst));
