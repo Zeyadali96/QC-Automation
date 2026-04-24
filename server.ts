@@ -511,129 +511,90 @@ async function startServer() {
 
       browser = await chromiumExtra.launch(launchOptions);
 
-      // STEALTH OVERHAUL: No proxy, focused on automation masking and language spoofing
+      // STEALTH INJECTION: Mimic Google AI Studio / Human consumer browser
       const context = await browser.newContext({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         viewport: { width: 1920, height: 1080 },
-        locale: 'nl-NL', // Language Spoofing
+        locale: 'nl-NL', // Dutch Localization
         extraHTTPHeaders: {
-          'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
+          'Accept-Language': 'nl-NL,nl;q=0.9',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
         }
       });
 
-      // Automation Masking: Makes Bol.com think a human is browsing
+      // Advanced Stealth Masking
       await context.addInitScript(() => {
-        Object.defineProperty(navigator, 'webdriver', { get: () => false });
+        // Mask Automation
+        // @ts-ignore
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        
+        // Spoof Plugins
+        // @ts-ignore
+        Object.defineProperty(navigator, 'plugins', {
+          get: () => [
+            { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer' },
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+            { name: 'Native Client', filename: 'internal-nacl-plugin' }
+          ]
+        });
+
+        // Hardware Spoofing (avoid low-resource flags)
+        // @ts-ignore
+        Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+        // @ts-ignore
+        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
       });
 
       let page = await context.newPage();
 
-      // Navigate to search results with RECOVERY retry logic
+      // NAVIGATION OVERHAUL: Wait for commit then handle cookies
       console.log(`Navigating to: ${searchUrl}`);
-      let navigationSuccess = false;
-
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        try {
-          await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-          
-          const pageSource = await page.content();
-          if (pageSource.includes("IP adres is geblokkeerd") || pageSource.includes("rustig aan speed racer")) {
-            console.error(`❌ Blocked on attempt ${attempt}`);
-            if (attempt === 1) {
-              console.log("RECOVERY: Waiting 5 seconds and trying the search one more time...");
-              await page.waitForTimeout(5000);
-              continue;
-            } else {
-              throw new Error("Bol.com appears to be blocking the request after retry.");
-            }
-          }
-
-          navigationSuccess = true;
-          break;
-        } catch (e: any) {
-          if (attempt === 1) {
-            await page.waitForTimeout(5000);
-          } else {
-            throw e;
-          }
+      try {
+        await page.goto(searchUrl, { waitUntil: 'commit', timeout: 30000 });
+        
+        // Handle cookie consent if triggered
+        const title = await page.title();
+        if (title.toLowerCase().includes('cookies') || title.toLowerCase().includes('bevestig')) {
+          console.log("Cookie consent detected, clicking Accept All...");
+          await page.click('[data-test="consent-assign-all"]').catch(() => null);
+          await page.waitForTimeout(2000);
         }
+      } catch (e: any) {
+        console.warn(`Initial navigation warning: ${e.message}`);
       }
-
-      if (!navigationSuccess) {
-        throw new Error(`Failed to navigate to BOL after retry.`);
-      }
-
-      // HUMAN INTERACTION: Wait 3 seconds before clicking the product
-      await page.waitForTimeout(3000);
 
       // ---------------------------------------------------------------
       // Detect search-result page and navigate to first product link
       // ---------------------------------------------------------------
-      const pageTitle = await page.title();
-      console.log(`Page title after search: "${pageTitle}"`);
-
-      // Always treat a search-by-EAN URL as a search page (we always start there).
-      // Also detect by title keywords or DOM structure.
-      const isSearchPage =
-        searchUrl.includes('searchtext=') ||
-        pageTitle.includes('Alle artikelen') ||
-        pageTitle.includes('Zoekresultaten') ||
-        await page.evaluate(() => {
-          return !!(
-            document.querySelector('.product-list') ||
-            document.querySelector('.product-item--grid') ||
-            document.querySelector('[data-test="product-list"]') ||
-            document.querySelector('[data-test="products-section"]')
-          );
-        });
-
-      if (isSearchPage) {
-        console.log('🔎 Search results page detected – waiting for product link...');
-
-        let productHref: string | null = null;
-
-        try {
-          // Reinforced Bol.com Link Detection (10-second timeout)
-          const productLink = await page.waitForSelector(
-            '[data-test="product-title"], [data-test="product-card"] a, a[href*="/p/"]', 
-            { timeout: 10000 }
-          );
-
-          if (productLink) {
-            const href = await productLink.getAttribute('href');
-            productHref = href ? (href.startsWith('http') ? href : `https://www.bol.com${href}`) : null;
-            if (productHref) console.log(`✅ Found product link: ${productHref}`);
-          }
-        } catch (e) {
-          // If selectors fail, check if we are on a "No Results" page or "Blocked" page
-          const content = await page.content();
-          console.error(`Bol.com: No link found. Page Title: "${pageTitle}"`);
-          
-          if (content.includes("geblokkeerd") || content.includes("rustig aan speed racer")) {
-            throw new Error("Bol.com IP Blocked: Cannot see product links.");
-          }
-          throw new Error("Bol.com: Search results loaded but no product link found. Check EAN validity.");
+      
+      // Treatment of search results with manual redirect fallback
+      let productHref: string | null = null;
+      try {
+        // Primary detection for 2026 selectors
+        const productLink = await page.waitForSelector('a[data-test="product-title"]', { timeout: 10000 });
+        if (productLink) {
+          const href = await productLink.getAttribute('href');
+          productHref = href ? (href.startsWith('http') ? href : `https://www.bol.com${href}`) : null;
         }
-
-        if (!productHref) {
-          throw new Error("Bol.com: EAN search returned a results page but no valid product link was extracted.");
-        }
-
-        // Navigate to the product detail page
-        console.log(`➡️ Navigating to product page: ${productHref}`);
-        try {
-          await page.goto(productHref, { waitUntil: 'domcontentloaded', timeout: 45000 });
-        } catch (e: any) {
-          if (e.name === 'TimeoutError') {
-            console.warn('⚠️ Product page navigation timed out – proceeding with whatever is loaded.');
-          } else {
-            throw e;
-          }
-        }
-
-        console.log(`✅ Now on product page: "${await page.title()}"`);
+      } catch (e) {
+        console.log("Search result link not found. Attempting manual redirect fallback...");
+        // Manual Redirect Fallback: Use EAN directly if search page fails to populate links
+        productHref = `https://www.bol.com/nl/nl/p/_/${ean}/`;
       }
+
+      if (!productHref) {
+        throw new Error("Bol.com: Could not determine product URL.");
+      }
+
+      // Navigate to the product detail page
+      console.log(`➡️ Reaching product page: ${productHref}`);
+      try {
+        await page.goto(productHref, { waitUntil: 'domcontentloaded', timeout: 45000 });
+      } catch (e: any) {
+        console.warn('⚠️ PDP navigation warning – proceeding with current content.');
+      }
+
+      console.log(`✅ Now on product page: "${await page.title()}"`);
 
       // Ensure we are on a product page — wait specifically for the title (2026-compatible selector)
       await page.waitForSelector('[data-test="title"], div#pdp_main_section, h1.page-title, #buyBlockSlot, #pdp_description', { timeout: 15000 }).catch(() => {
