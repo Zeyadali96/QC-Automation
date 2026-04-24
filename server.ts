@@ -166,16 +166,14 @@ async function startServer() {
         '#corePrice_feature_div .a-offscreen',
         '#price_inside_buybox',
         '#priceblock_ourprice',
-        '.apex-core-price-identifier .a-offscreen',
-        '.apex-pricetopay-value .a-offscreen',
-        '#apex_desktop_price_feature_div .a-offscreen',
-        '.a-price span.a-offscreen',
-        'span.a-offscreen' // Lowest priority fallback
+        '#priceblock_dealprice',
+        'span.a-price span.a-offscreen',
+        '.a-price.a-text-price .a-offscreen'
       ];
 
       for (const selector of priceSelectors) {
         const val = $(selector).first().text().trim();
-        if (val && val !== "N/A") {
+        if (val && val !== "N/A" && val.length < 20) { // Limit length to avoid title capture
           priceDisplay = val;
           break;
         }
