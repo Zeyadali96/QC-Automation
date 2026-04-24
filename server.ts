@@ -510,151 +510,83 @@ async function startServer() {
 
       browser = await chromiumExtra.launch(launchOptions);
 
-      // STEALTH INJECTION: Mimic Google AI Studio / Human consumer browser
+      // --- BOL.COM MOBILE STEALTH CONTEXT ---
+      const viewportWidth = Math.floor(Math.random() * (420 - 375 + 1)) + 375;
       const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        viewport: { width: 1920, height: 1080 },
-        locale: 'nl-NL', // Dutch Localization
+        userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
+        viewport: { width: viewportWidth, height: 844 },
+        locale: 'nl-NL',
         extraHTTPHeaders: {
           'Accept-Language': 'nl-NL,nl;q=0.9',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         }
       });
 
-      // Clear cookies and cache logic
       await context.clearCookies();
 
-      // Advanced Stealth Masking
+      // Mask Automation
       await context.addInitScript(() => {
-        // Mask Automation
         // @ts-ignore
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        
-        // Spoof Plugins
-        // @ts-ignore
-        Object.defineProperty(navigator, 'plugins', {
-          get: () => [
-            { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer' },
-            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-            { name: 'Native Client', filename: 'internal-nacl-plugin' }
-          ]
-        });
-
-        // Hardware Spoofing (avoid low-resource flags)
-        // @ts-ignore
-        Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
-        // @ts-ignore
-        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
       });
 
       let page = await context.newPage();
 
-      // --- IMPROVED BOL.COM SEARCH (SERPER.DEV) ---
-      console.log(`Searching Bol.com via Serper for EAN: ${ean}`);
-      let productHref: string | null = null;
-      let serperPrice: string = "N/A";
+      // --- FORCED BOL.COM BYPASS (Direct Link Method) ---
+      const directSearchUrl = `https://www.bol.com/nl/nl/s/?searchtext=${ean}`;
+      console.log(`Mobile Direct Jump: ${directSearchUrl} (Viewport: ${viewportWidth}px)`);
 
-      const fallbackTitle = masterData?.title || "";
-      const serperQueries = [
-        `site:bol.com "${ean}"`,
-        `site:bol.com ${ean} ${fallbackTitle}`
-      ];
-
-      try {
-        const serperApiKey = process.env.SERPER_API_KEY;
-        if (serperApiKey) {
-          for (const q of serperQueries) {
-            console.log(`Serper query: ${q}`);
-            const serperResponse = await axios.post("https://google.serper.dev/search", {
-              q: q,
-              gl: "nl",
-              hl: "nl",
-              num: 3
-            }, {
-              headers: {
-                "X-API-KEY": serperApiKey,
-                "Content-Type": "application/json"
-              }
-            });
-
-            const serperData = serperResponse.data;
-            if (serperData.organic && serperData.organic.length > 0) {
-              // Find the first link that looks like a product page (contains /p/)
-              const productResult = serperData.organic.find((res: any) => res.link.includes('/p/'));
-              if (productResult) {
-                productHref = productResult.link;
-                console.log(`✅ Found direct Bol.com link via Serper: ${productHref}`);
-                
-                // Helper to extract price from snippet if present
-                const snippet = productResult.snippet || "";
-                const priceMatch = snippet.match(/€\s?(\d+([.,]\d+)?)/);
-                if (priceMatch) serperPrice = priceMatch[0];
-                break; // Found it!
-              }
-            }
-          }
-        }
-      } catch (serperErr: any) {
-        console.warn("Serper Search Warning (will fallback to internal):", serperErr.message);
-      }
-
-      // --- SMART FALLBACK: Internal Bol Search ---
-      if (!productHref) {
-        console.log("Serper returned no results. Triggering Smart Fallback: Internal Bol Search...");
-        const internalSearchUrl = `https://www.bol.com/nl/nl/s/?searchtext=${ean}`;
+      async function attemptNavigation(isRetry = false) {
         try {
-          await page.goto(internalSearchUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+          await page.goto(directSearchUrl, { waitUntil: 'commit', timeout: 45000 });
           
-          // Detect Privacy/Cookie page on internal search
-          const currentTitle = await page.title();
-          if (currentTitle.includes('Privacy') || currentTitle.includes('cookies')) {
+          // Cookie Bypass
+          const title = await page.title();
+          if (title.includes('Privacy') || title.includes('cookies')) {
+            console.log("Cookie consent detected, clicking Akkoord...");
             await page.click('button#js-accept-all-cookies, [data-test="consent-assign-all"]').catch(() => null);
             await page.waitForTimeout(2000);
           }
 
-          // Locate the first product title
-          const productLink = await page.waitForSelector('a[data-test="product-title"]', { timeout: 10000 }).catch(() => null);
-          if (productLink) {
-            const href = await productLink.getAttribute('href');
-            productHref = href ? (href.startsWith('http') ? href : `https://www.bol.com${href}`) : null;
-            console.log(`✅ Fallback found link: ${productHref}`);
+          // Check for Block
+          const content = await page.content();
+          if (content.includes("IP adres is geblokkeerd") || content.includes("rustig aan speed racer")) {
+            if (!isRetry) {
+              console.warn("❌ Blocked. Initiating 10-second recovery and retry...");
+              await page.waitForTimeout(10000);
+              // Update viewport for jitter
+              const newWidth = Math.floor(Math.random() * (420 - 375 + 1)) + 375;
+              await page.setViewportSize({ width: newWidth, height: 844 });
+              return await attemptNavigation(true);
+            }
+            throw new Error("Bol.com IP Blocked after retry.");
           }
-        } catch (fallbackErr: any) {
-          console.error("Internal Fallback Failed:", fallbackErr.message);
+
+          // Wait for redirect to /p/ (Product Page)
+          try {
+            await page.waitForURL('**/p/**', { timeout: 8000 });
+          } catch (e) {
+            // Not redirected? Click first title
+            const firstProduct = await page.waitForSelector('[data-test="product-title"]', { timeout: 5000 }).catch(() => null);
+            if (firstProduct) {
+              await firstProduct.click();
+              await page.waitForURL('**/p/**', { timeout: 8000 }).catch(() => null);
+            }
+          }
+
+        } catch (err: any) {
+          if (!isRetry) {
+             console.warn(`Navigation failed: ${err.message}. Retrying once...`);
+             await page.waitForTimeout(5000);
+             return await attemptNavigation(true);
+          }
+          throw err;
         }
       }
 
-      if (!productHref) {
-        // Ultimate fallback: direct PDP construction
-        console.log("No links found. Attempting ultimate EAN-direct PDP construction.");
-        productHref = `https://www.bol.com/nl/nl/p/_/${ean}/`;
-      }
+      await attemptNavigation();
 
-      // Reaching product page directly via the link found by Serper
-      console.log(`➡️ Reaching product page: ${productHref}`);
-      try {
-        await page.goto(productHref, { waitUntil: 'domcontentloaded', timeout: 60000 });
-        
-        // Handle Cookie Consent if it appears on direct entry
-        const title = await page.title();
-        if (title.includes('Privacy') || title.includes('cookies') || title.includes('bevestig')) {
-          console.log("Cookie consent detected on direct entry, clicking Akkoord...");
-          await page.click('button#js-accept-all-cookies, [data-test="consent-assign-all"]').catch(() => null);
-          await page.waitForTimeout(2000);
-        }
-
-        // Final check for block on PDP
-        const finalContent = await page.content();
-        if (finalContent.includes("IP adres is geblokkeerd")) {
-            console.error("❌ IP Blocked on Product Page. Entering 60-second cooldown...");
-            await page.waitForTimeout(60000);
-            throw new Error("Bol.com IP Blocked on PDP.");
-        }
-      } catch (e: any) {
-        console.warn('⚠️ PDP navigation warning – proceeding with current content.');
-      }
-
-      console.log(`✅ Now on product page: "${await page.title()}"`);
+      console.log(`✅ Reached Bol.com product page: "${await page.title()}"`);
 
       // Ensure we are on a product page — wait specifically for the title (2026-compatible selector)
       await page.waitForSelector('[data-test="title"], div#pdp_main_section, h1.page-title, #buyBlockSlot, #pdp_description', { timeout: 15000 }).catch(() => {
