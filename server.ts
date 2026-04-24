@@ -162,14 +162,15 @@ async function startServer() {
       let listPrice = "N/A";
 
       const priceSelectors = [
-        'span.a-offscreen', // High priority as requested
         '#corePriceDisplay_desktop_feature_div .a-offscreen',
         '#corePrice_feature_div .a-offscreen',
         '#price_inside_buybox',
+        '#priceblock_ourprice',
         '.apex-core-price-identifier .a-offscreen',
         '.apex-pricetopay-value .a-offscreen',
         '#apex_desktop_price_feature_div .a-offscreen',
-        '.a-price span.a-offscreen'
+        '.a-price span.a-offscreen',
+        'span.a-offscreen' // Lowest priority fallback
       ];
 
       for (const selector of priceSelectors) {
