@@ -549,48 +549,85 @@ async function startServer() {
 
       let page = await context.newPage();
 
-      // --- SERPER.DEV BOL.COM SEARCH INTEGRATION ---
+      // --- IMPROVED BOL.COM SEARCH (SERPER.DEV) ---
       console.log(`Searching Bol.com via Serper for EAN: ${ean}`);
       let productHref: string | null = null;
       let serperPrice: string = "N/A";
 
+      const fallbackTitle = masterData?.title || "";
+      const serperQueries = [
+        `site:bol.com "${ean}"`,
+        `site:bol.com ${ean} ${fallbackTitle}`
+      ];
+
       try {
         const serperApiKey = process.env.SERPER_API_KEY;
-        if (!serperApiKey) {
-          throw new Error("SERPER_API_KEY not configured in environment variables.");
-        }
+        if (serperApiKey) {
+          for (const q of serperQueries) {
+            console.log(`Serper query: ${q}`);
+            const serperResponse = await axios.post("https://google.serper.dev/search", {
+              q: q,
+              gl: "nl",
+              hl: "nl",
+              num: 3
+            }, {
+              headers: {
+                "X-API-KEY": serperApiKey,
+                "Content-Type": "application/json"
+              }
+            });
 
-        const serperResponse = await axios.post("https://google.serper.dev/search", {
-          q: `site:bol.com ${ean}`,
-          gl: "nl",
-          hl: "nl"
-        }, {
-          headers: {
-            "X-API-KEY": serperApiKey,
-            "Content-Type": "application/json"
+            const serperData = serperResponse.data;
+            if (serperData.organic && serperData.organic.length > 0) {
+              // Find the first link that looks like a product page (contains /p/)
+              const productResult = serperData.organic.find((res: any) => res.link.includes('/p/'));
+              if (productResult) {
+                productHref = productResult.link;
+                console.log(`✅ Found direct Bol.com link via Serper: ${productHref}`);
+                
+                // Helper to extract price from snippet if present
+                const snippet = productResult.snippet || "";
+                const priceMatch = snippet.match(/€\s?(\d+([.,]\d+)?)/);
+                if (priceMatch) serperPrice = priceMatch[0];
+                break; // Found it!
+              }
+            }
           }
-        });
-
-        const serperData = serperResponse.data;
-        if (serperData.organic && serperData.organic.length > 0) {
-          const result = serperData.organic[0];
-          productHref = result.link;
-          console.log(`✅ Found direct Bol.com link via Serper: ${productHref}`);
-          
-          // Helper to extract price from snippet if present
-          const snippet = result.snippet || "";
-          const priceMatch = snippet.match(/€\s?(\d+([.,]\d+)?)/);
-          if (priceMatch) serperPrice = priceMatch[0];
-        } else {
-          throw new Error("Product not listed on Bol (Serper returned no organic results).");
         }
       } catch (serperErr: any) {
-        console.error("Serper Search Error:", serperErr.message);
-        throw new Error(`Bol.com Search Failed: ${serperErr.message}`);
+        console.warn("Serper Search Warning (will fallback to internal):", serperErr.message);
+      }
+
+      // --- SMART FALLBACK: Internal Bol Search ---
+      if (!productHref) {
+        console.log("Serper returned no results. Triggering Smart Fallback: Internal Bol Search...");
+        const internalSearchUrl = `https://www.bol.com/nl/nl/s/?searchtext=${ean}`;
+        try {
+          await page.goto(internalSearchUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+          
+          // Detect Privacy/Cookie page on internal search
+          const currentTitle = await page.title();
+          if (currentTitle.includes('Privacy') || currentTitle.includes('cookies')) {
+            await page.click('button#js-accept-all-cookies, [data-test="consent-assign-all"]').catch(() => null);
+            await page.waitForTimeout(2000);
+          }
+
+          // Locate the first product title
+          const productLink = await page.waitForSelector('a[data-test="product-title"]', { timeout: 10000 }).catch(() => null);
+          if (productLink) {
+            const href = await productLink.getAttribute('href');
+            productHref = href ? (href.startsWith('http') ? href : `https://www.bol.com${href}`) : null;
+            console.log(`✅ Fallback found link: ${productHref}`);
+          }
+        } catch (fallbackErr: any) {
+          console.error("Internal Fallback Failed:", fallbackErr.message);
+        }
       }
 
       if (!productHref) {
-        throw new Error("Bol.com: Could not determine product URL.");
+        // Ultimate fallback: direct PDP construction
+        console.log("No links found. Attempting ultimate EAN-direct PDP construction.");
+        productHref = `https://www.bol.com/nl/nl/p/_/${ean}/`;
       }
 
       // Reaching product page directly via the link found by Serper
