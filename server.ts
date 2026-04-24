@@ -594,69 +594,37 @@ async function startServer() {
 
         let productHref: string | null = null;
 
-        // 1. Race Condition: Wait for [data-test='product-title'] or a[href*='/p/'] (Max 8 seconds)
         try {
-          const productLink = await Promise.race([
-            page.waitForSelector("[data-test='product-title'], a[href*='/p/']", { timeout: 8000 }),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 8500)) // Slight buffer to let waitForSelector win if they coincide
-          ]);
+          // Reinforced Bol.com Link Detection (10-second timeout)
+          const productLink = await page.waitForSelector(
+            '[data-test="product-title"], [data-test="product-card"] a, a[href*="/p/"]', 
+            { timeout: 10000 }
+          );
 
           if (productLink) {
-            productHref = await productLink.evaluate((el) => {
-              if (el instanceof HTMLAnchorElement) return el.href;
-              const a = el.closest('a');
-              return a ? a.href : null;
-            });
-            if (productHref) console.log(`✅ Found product link via race: ${productHref}`);
+            const href = await productLink.getAttribute('href');
+            productHref = href ? (href.startsWith('http') ? href : `https://www.bol.com${href}`) : null;
+            if (productHref) console.log(`✅ Found product link: ${productHref}`);
           }
         } catch (e) {
-          console.warn('⚠️ Race condition for product link timed out or failed.');
-        }
-
-        // 2. Fallback: Interactive Click if static href extraction failed
-        if (!productHref) {
-          console.warn('⚠️ Falling back to interactive click on first available product element.');
-          const productEl = await page.$("[data-test='product-title'], a[href*='/p/']");
-          if (productEl) {
-            try {
-              await Promise.all([
-                page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }),
-                productEl.click()
-              ]);
-              productHref = page.url();
-              console.log(`✅ Click fallback reached product page: ${productHref}`);
-            } catch (err) {
-              console.warn('⚠️ Click fallback navigation failed.');
-            }
+          // If selectors fail, check if we are on a "No Results" page or "Blocked" page
+          const content = await page.content();
+          console.error(`Bol.com: No link found. Page Title: "${pageTitle}"`);
+          
+          if (content.includes("geblokkeerd") || content.includes("rustig aan speed racer")) {
+            throw new Error("Bol.com IP Blocked: Cannot see product links.");
           }
-        }
-
-        // 3. Last Resort: Scan full DOM for any /p/ link
-        if (!productHref) {
-          console.warn('⚠️ Scanning full DOM for any candidate /p/ links...');
-          productHref = await page.evaluate(() => {
-            const anchors = Array.from(document.querySelectorAll('a'));
-            const candidate = anchors.find(a => a.href && a.href.includes('/p/') && !a.href.includes('javascript'));
-            return candidate ? candidate.getAttribute('href') : null;
-          });
-          if (productHref) console.log(`✅ Found product link via DOM scan: ${productHref}`);
+          throw new Error("Bol.com: Search results loaded but no product link found. Check EAN validity.");
         }
 
         if (!productHref) {
-          throw new Error(
-            `Bol.com: EAN search returned a results page but no product link was found. ` +
-            `The page may be empty (product not listed on Bol) or Bol's markup has changed.`
-          );
+          throw new Error("Bol.com: EAN search returned a results page but no valid product link was extracted.");
         }
 
         // Navigate to the product detail page
-        const productUrl = productHref.startsWith('http')
-          ? productHref
-          : `https://www.bol.com${productHref}`;
-
-        console.log(`➡️ Navigating to product page: ${productUrl}`);
+        console.log(`➡️ Navigating to product page: ${productHref}`);
         try {
-          await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+          await page.goto(productHref, { waitUntil: 'domcontentloaded', timeout: 45000 });
         } catch (e: any) {
           if (e.name === 'TimeoutError') {
             console.warn('⚠️ Product page navigation timed out – proceeding with whatever is loaded.');
