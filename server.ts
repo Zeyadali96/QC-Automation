@@ -549,76 +549,63 @@ async function startServer() {
 
       let page = await context.newPage();
 
-      // --- IP JITTER: Home Page First Strategy ---
-      console.log(`Navigating to Bol.com Home Page for EAN: ${ean}`);
-      try {
-        // Go to Home Page first to mimic human entry
-        await page.goto('https://www.bol.com/nl/', { waitUntil: 'commit', timeout: 60000 });
-        
-        // Handle Privacy/Cookie consent immediately
-        const title = await page.title();
-        if (title.includes('Privacy') || title.includes('cookies') || title.includes('bevestig')) {
-          console.log("Cookie consent detected, clicking Akkoord...");
-          const acceptButton = await page.$('button#js-accept-all-cookies') || await page.$('[data-test="consent-assign-all"]');
-          if (acceptButton) {
-            await acceptButton.click();
-            await page.waitForTimeout(2000);
-          }
-        }
-
-        // Wait 2 seconds (Human Pause)
-        await page.waitForTimeout(2000);
-
-        // Check for Block before typing
-        const content = await page.content();
-        if (content.includes("IP adres is geblokkeerd") || content.includes("rustig aan speed racer")) {
-            console.error("❌ IP Blocked on Home Page. Entering 60-second cooldown...");
-            await page.waitForTimeout(60000); // 1-minute cooldown
-            throw new Error("Bol.com IP Blocked: Cooldown triggered.");
-        }
-
-        // Manually type the EAN into the search bar
-        console.log(`Typing EAN: ${ean}`);
-        const searchInput = await page.waitForSelector('input[name="searchtext"], #searchfor, [data-test="search-input"]', { timeout: 15000 });
-        if (searchInput) {
-            await searchInput.click();
-            await page.keyboard.type(ean, { delay: 100 }); // Type with 100ms delay between keys
-            await page.keyboard.press('Enter');
-            await page.waitForTimeout(3000);
-        }
-
-      } catch (e: any) {
-        console.warn(`Home page navigation/search warning: ${e.message}`);
-        // Fallback to direct search if manual typing fails, but respect the cooldown if blocked
-        if (e.message.includes("Blocked")) throw e;
-      }
-
-      // ---------------------------------------------------------------
-      // Detect search-result page and navigate to first product link
-      // ---------------------------------------------------------------
-      
+      // --- SERPER.DEV BOL.COM SEARCH INTEGRATION ---
+      console.log(`Searching Bol.com via Serper for EAN: ${ean}`);
       let productHref: string | null = null;
+      let serperPrice: string = "N/A";
+
       try {
-        // Primary detection for 2026 selectors
-        const productLink = await page.waitForSelector('a[data-test="product-title"]', { timeout: 10000 });
-        if (productLink) {
-          const href = await productLink.getAttribute('href');
-          productHref = href ? (href.startsWith('http') ? href : `https://www.bol.com${href}`) : null;
+        const serperApiKey = process.env.SERPER_API_KEY;
+        if (!serperApiKey) {
+          throw new Error("SERPER_API_KEY not configured in environment variables.");
         }
-      } catch (e) {
-        console.log("Search result link not found. Attempting manual redirect fallback...");
-        productHref = `https://www.bol.com/nl/nl/p/_/${ean}/`;
+
+        const serperResponse = await axios.post("https://google.serper.dev/search", {
+          q: `site:bol.com ${ean}`,
+          gl: "nl",
+          hl: "nl"
+        }, {
+          headers: {
+            "X-API-KEY": serperApiKey,
+            "Content-Type": "application/json"
+          }
+        });
+
+        const serperData = serperResponse.data;
+        if (serperData.organic && serperData.organic.length > 0) {
+          const result = serperData.organic[0];
+          productHref = result.link;
+          console.log(`✅ Found direct Bol.com link via Serper: ${productHref}`);
+          
+          // Helper to extract price from snippet if present
+          const snippet = result.snippet || "";
+          const priceMatch = snippet.match(/€\s?(\d+([.,]\d+)?)/);
+          if (priceMatch) serperPrice = priceMatch[0];
+        } else {
+          throw new Error("Product not listed on Bol (Serper returned no organic results).");
+        }
+      } catch (serperErr: any) {
+        console.error("Serper Search Error:", serperErr.message);
+        throw new Error(`Bol.com Search Failed: ${serperErr.message}`);
       }
 
       if (!productHref) {
         throw new Error("Bol.com: Could not determine product URL.");
       }
 
-      // Reaching product page
+      // Reaching product page directly via the link found by Serper
       console.log(`➡️ Reaching product page: ${productHref}`);
       try {
-        await page.goto(productHref, { waitUntil: 'domcontentloaded', timeout: 45000 });
+        await page.goto(productHref, { waitUntil: 'domcontentloaded', timeout: 60000 });
         
+        // Handle Cookie Consent if it appears on direct entry
+        const title = await page.title();
+        if (title.includes('Privacy') || title.includes('cookies') || title.includes('bevestig')) {
+          console.log("Cookie consent detected on direct entry, clicking Akkoord...");
+          await page.click('button#js-accept-all-cookies, [data-test="consent-assign-all"]').catch(() => null);
+          await page.waitForTimeout(2000);
+        }
+
         // Final check for block on PDP
         const finalContent = await page.content();
         if (finalContent.includes("IP adres is geblokkeerd")) {
