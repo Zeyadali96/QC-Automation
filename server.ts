@@ -523,6 +523,9 @@ async function startServer() {
         }
       });
 
+      // Clear cookies and cache logic
+      await context.clearCookies();
+
       // Advanced Stealth Masking
       await context.addInitScript(() => {
         // Mask Automation
@@ -548,27 +551,54 @@ async function startServer() {
 
       let page = await context.newPage();
 
-      // NAVIGATION OVERHAUL: Wait for commit then handle cookies
-      console.log(`Navigating to: ${searchUrl}`);
+      // --- IP JITTER: Home Page First Strategy ---
+      console.log(`Navigating to Bol.com Home Page for EAN: ${ean}`);
       try {
-        await page.goto(searchUrl, { waitUntil: 'commit', timeout: 30000 });
+        // Go to Home Page first to mimic human entry
+        await page.goto('https://www.bol.com/nl/', { waitUntil: 'commit', timeout: 60000 });
         
-        // Handle cookie consent if triggered
+        // Handle Privacy/Cookie consent immediately
         const title = await page.title();
-        if (title.toLowerCase().includes('cookies') || title.toLowerCase().includes('bevestig')) {
-          console.log("Cookie consent detected, clicking Accept All...");
-          await page.click('[data-test="consent-assign-all"]').catch(() => null);
-          await page.waitForTimeout(2000);
+        if (title.includes('Privacy') || title.includes('cookies') || title.includes('bevestig')) {
+          console.log("Cookie consent detected, clicking Akkoord...");
+          const acceptButton = await page.$('button#js-accept-all-cookies') || await page.$('[data-test="consent-assign-all"]');
+          if (acceptButton) {
+            await acceptButton.click();
+            await page.waitForTimeout(2000);
+          }
         }
+
+        // Wait 2 seconds (Human Pause)
+        await page.waitForTimeout(2000);
+
+        // Check for Block before typing
+        const content = await page.content();
+        if (content.includes("IP adres is geblokkeerd") || content.includes("rustig aan speed racer")) {
+            console.error("❌ IP Blocked on Home Page. Entering 60-second cooldown...");
+            await page.waitForTimeout(60000); // 1-minute cooldown
+            throw new Error("Bol.com IP Blocked: Cooldown triggered.");
+        }
+
+        // Manually type the EAN into the search bar
+        console.log(`Typing EAN: ${ean}`);
+        const searchInput = await page.waitForSelector('input[name="searchtext"], #searchfor, [data-test="search-input"]', { timeout: 15000 });
+        if (searchInput) {
+            await searchInput.click();
+            await page.keyboard.type(ean, { delay: 100 }); // Type with 100ms delay between keys
+            await page.keyboard.press('Enter');
+            await page.waitForTimeout(3000);
+        }
+
       } catch (e: any) {
-        console.warn(`Initial navigation warning: ${e.message}`);
+        console.warn(`Home page navigation/search warning: ${e.message}`);
+        // Fallback to direct search if manual typing fails, but respect the cooldown if blocked
+        if (e.message.includes("Blocked")) throw e;
       }
 
       // ---------------------------------------------------------------
       // Detect search-result page and navigate to first product link
       // ---------------------------------------------------------------
       
-      // Treatment of search results with manual redirect fallback
       let productHref: string | null = null;
       try {
         // Primary detection for 2026 selectors
@@ -579,7 +609,6 @@ async function startServer() {
         }
       } catch (e) {
         console.log("Search result link not found. Attempting manual redirect fallback...");
-        // Manual Redirect Fallback: Use EAN directly if search page fails to populate links
         productHref = `https://www.bol.com/nl/nl/p/_/${ean}/`;
       }
 
@@ -587,10 +616,18 @@ async function startServer() {
         throw new Error("Bol.com: Could not determine product URL.");
       }
 
-      // Navigate to the product detail page
+      // Reaching product page
       console.log(`➡️ Reaching product page: ${productHref}`);
       try {
         await page.goto(productHref, { waitUntil: 'domcontentloaded', timeout: 45000 });
+        
+        // Final check for block on PDP
+        const finalContent = await page.content();
+        if (finalContent.includes("IP adres is geblokkeerd")) {
+            console.error("❌ IP Blocked on Product Page. Entering 60-second cooldown...");
+            await page.waitForTimeout(60000);
+            throw new Error("Bol.com IP Blocked on PDP.");
+        }
       } catch (e: any) {
         console.warn('⚠️ PDP navigation warning – proceeding with current content.');
       }
