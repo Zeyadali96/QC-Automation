@@ -174,7 +174,8 @@ async function startServer() {
 
       for (const selector of priceSelectors) {
         const val = $(selector).first().text().trim();
-        if (val && val !== "N/A") {
+        // Skip values that are obviously promotional text or "small business" banners
+        if (val && val !== "N/A" && !val.toLowerCase().includes("small business")) {
           priceDisplay = val;
           break;
         }
